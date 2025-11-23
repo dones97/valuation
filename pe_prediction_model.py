@@ -89,9 +89,7 @@ class PEPredictionModel:
             operating_margins = info.get('operatingMargins', np.nan)
             gross_margins = info.get('grossMargins', np.nan)
 
-            # Book value and price to book
-            book_value = info.get('bookValue', np.nan)
-            price_to_book = info.get('priceToBook', np.nan)
+            # Book value (removed price_to_book due to data leakage - it contains current price)
 
             # Growth metrics
             revenue_growth = info.get('revenueGrowth', np.nan)
@@ -164,7 +162,6 @@ class PEPredictionModel:
                 'revenue_growth': revenue_growth,
                 'earnings_growth': earnings_growth,
                 'earnings_quarterly_growth': earnings_quarterly_growth,
-                'price_to_book': price_to_book,
                 'debt_to_equity': debt_to_equity,
                 'current_ratio': current_ratio,
                 'quick_ratio': quick_ratio,
@@ -238,14 +235,14 @@ class PEPredictionModel:
         df['sector_encoded'] = self.sector_encoder.fit_transform(df['sector'])
         df['industry_encoded'] = self.industry_encoder.fit_transform(df['industry'])
 
-        # Select features for training
+        # Select features for training (removed price_to_book to prevent data leakage)
         feature_columns = [
             'market_cap', 'revenue', 'net_income', 'ebitda', 'gross_profit',
             'roe', 'roa', 'roce',
             'profit_margins', 'operating_margins', 'gross_margins',
             'fcf_margin', 'fcf_to_net_income', 'gp_to_assets', 'asset_turnover',
             'revenue_growth', 'earnings_growth', 'earnings_quarterly_growth',
-            'price_to_book', 'debt_to_equity',
+            'debt_to_equity',
             'current_ratio', 'quick_ratio',
             'dividend_yield', 'payout_ratio',
             'beta',
