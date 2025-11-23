@@ -62,6 +62,34 @@ def load_model():
         return None
 
 
+def get_model_statistics(model):
+    """Get Random Forest model statistics"""
+    if model is None or model.model is None:
+        return None
+
+    # Get tree depths
+    depths = [tree.tree_.max_depth for tree in model.model.estimators_]
+    avg_depth = np.mean(depths)
+    max_depth_configured = model.model.max_depth
+
+    # Get average number of samples in leaf nodes
+    leaf_samples = []
+    for tree in model.model.estimators_:
+        tree_structure = tree.tree_
+        # Leaf nodes have -1 for both children
+        is_leaf = (tree_structure.children_left == -1) & (tree_structure.children_right == -1)
+        leaf_samples.extend(tree_structure.n_node_samples[is_leaf])
+
+    avg_leaf_samples = np.mean(leaf_samples)
+
+    return {
+        'max_depth': max_depth_configured,
+        'avg_depth': avg_depth,
+        'avg_leaf_samples': avg_leaf_samples,
+        'n_trees': model.model.n_estimators
+    }
+
+
 @st.cache_data
 def load_tickers():
     """Load available stock tickers (NSE only)"""
@@ -245,7 +273,7 @@ def display_prediction_results(prediction):
 def main():
     # Header
     st.markdown("<h1 class='main-header'>Indian Stock P/E Predictor</h1>", unsafe_allow_html=True)
-    st.markdown("<p class='sub-header'>Fair Valuation Analysis using Random Forest Machine Learning Model</p>", unsafe_allow_html=True)
+    st.markdown("<p class='sub-header'>AI-Powered Fair Valuation Analysis using Random Forest</p>", unsafe_allow_html=True)
 
     # Load model and data
     model = load_model()
@@ -341,6 +369,58 @@ def main():
             3. Calculates fair price (P/E × EPS)
             4. Shows upside/downside %
             """)
+
+        # Model architecture details
+        st.markdown("---")
+        st.markdown("### 🌳 Random Forest Architecture")
+
+        model_stats = get_model_statistics(model)
+
+        if model_stats:
+            arch_col1, arch_col2, arch_col3, arch_col4 = st.columns(4)
+
+            with arch_col1:
+                st.metric(
+                    label="Number of Trees",
+                    value=f"{model_stats['n_trees']}"
+                )
+
+            with arch_col2:
+                st.metric(
+                    label="Max Tree Depth",
+                    value=f"{model_stats['max_depth']}"
+                )
+
+            with arch_col3:
+                st.metric(
+                    label="Avg Actual Depth",
+                    value=f"{model_stats['avg_depth']:.1f}"
+                )
+
+            with arch_col4:
+                st.metric(
+                    label="Avg Stocks per Leaf",
+                    value=f"{model_stats['avg_leaf_samples']:.1f}"
+                )
+
+            st.markdown("""
+            The Random Forest uses **100 decision trees**, each with a maximum depth of **15 levels**.
+            On average, the final leaf nodes (decision endpoints) contain approximately **{:.1f} stocks**,
+            which prevents overfitting by ensuring predictions are based on multiple similar stocks rather
+            than individual outliers.
+            """.format(model_stats['avg_leaf_samples']))
+
+        # Feature importance visualization
+        st.markdown("---")
+        st.markdown("### 📊 Top 10 Features Explaining P/E Ratio")
+
+        try:
+            from PIL import Image
+            feature_img = Image.open('model_visualizations/feature_importance.png')
+            st.image(feature_img, use_container_width=True)
+            st.caption("Feature importance shows which fundamental metrics have the strongest influence on P/E ratio predictions. Higher values indicate greater predictive power.")
+        except FileNotFoundError:
+            st.warning("Feature importance visualization not found. Please train the model first.")
 
     # Footer
     st.markdown("---")
