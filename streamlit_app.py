@@ -357,7 +357,7 @@ def main():
             st.markdown("""
             - Algorithm: Random Forest
             - Training Split: 80/20
-            - Features: 27 fundamental metrics
+            - Features: 26 fundamental metrics
             - Auto-updates predictions
             """)
 
