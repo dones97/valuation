@@ -278,7 +278,7 @@ def display_prediction_results(prediction):
 def main():
     # Header
     st.markdown("<h1 class='main-header'>Indian Stock P/E Predictor</h1>", unsafe_allow_html=True)
-    st.markdown("<p class='sub-header'>AI-Powered Fair Valuation Analysis using Random Forest</p>", unsafe_allow_html=True)
+    st.markdown("<p class='sub-header'>Fair Valuation Estimator using Random Forest Machine Learning Model</p>", unsafe_allow_html=True)
 
     # Load model and data
     model = load_model()
