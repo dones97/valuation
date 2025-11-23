@@ -582,7 +582,13 @@ class PEPredictionModel:
             'fair_price': fair_price,
             'upside_downside_pct': upside_downside,
             'sector': stock_data['sector'],
-            'industry': stock_data['industry']
+            'industry': stock_data['industry'],
+            # Add fundamental metrics for key contributors analysis
+            'roe': stock_data.get('roe', np.nan),
+            'roce': stock_data.get('roce', np.nan),
+            'profit_margins': stock_data.get('profit_margins', np.nan),
+            'revenue_growth': stock_data.get('revenue_growth', np.nan),
+            'debt_to_equity': stock_data.get('debt_to_equity', np.nan)
         }
 
 
