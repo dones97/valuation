@@ -75,6 +75,55 @@ def load_tickers():
         return pd.DataFrame()
 
 
+def get_key_contributors(prediction):
+    """Identify key factors contributing to the P/E prediction"""
+    contributors = []
+
+    # Check ROE
+    if 'roe' in prediction and not pd.isna(prediction['roe']):
+        if prediction['roe'] > 0.20:  # 20%+
+            contributors.append("high ROE")
+        elif prediction['roe'] < 0.10:  # <10%
+            contributors.append("low ROE")
+
+    # Check profit margins
+    if 'profit_margins' in prediction and not pd.isna(prediction['profit_margins']):
+        if prediction['profit_margins'] > 0.15:  # 15%+
+            contributors.append("strong profit margins")
+        elif prediction['profit_margins'] < 0.05:  # <5%
+            contributors.append("weak profit margins")
+
+    # Check revenue growth
+    if 'revenue_growth' in prediction and not pd.isna(prediction['revenue_growth']):
+        if prediction['revenue_growth'] > 0.20:  # 20%+
+            contributors.append("high revenue growth")
+        elif prediction['revenue_growth'] < 0:
+            contributors.append("declining revenues")
+
+    # Check ROCE
+    if 'roce' in prediction and not pd.isna(prediction['roce']):
+        if prediction['roce'] > 0.20:  # 20%+
+            contributors.append("excellent capital efficiency")
+
+    # Check debt levels
+    if 'debt_to_equity' in prediction and not pd.isna(prediction['debt_to_equity']):
+        if prediction['debt_to_equity'] < 0.5:
+            contributors.append("low debt levels")
+        elif prediction['debt_to_equity'] > 2.0:
+            contributors.append("high debt burden")
+
+    # Return top 3 contributors
+    if len(contributors) >= 2:
+        if len(contributors) == 2:
+            return f"{contributors[0]} and {contributors[1]}"
+        else:
+            return f"{contributors[0]}, {contributors[1]}, and {contributors[2]}"
+    elif len(contributors) == 1:
+        return contributors[0]
+    else:
+        return "the company's overall fundamental profile"
+
+
 def display_prediction_results(prediction):
     """Display prediction results in a formatted way"""
     if not prediction:
@@ -101,8 +150,7 @@ def display_prediction_results(prediction):
     with col3:
         st.metric(
             label="Predicted Fair P/E",
-            value=f"{prediction['predicted_pe']:.2f}" if not pd.isna(prediction['predicted_pe']) else "N/A",
-            delta=f"{prediction['predicted_pe'] - prediction['current_pe']:.2f}" if not pd.isna(prediction['predicted_pe']) and not pd.isna(prediction['current_pe']) else None
+            value=f"{prediction['predicted_pe']:.2f}" if not pd.isna(prediction['predicted_pe']) else "N/A"
         )
 
     with col4:
@@ -111,22 +159,72 @@ def display_prediction_results(prediction):
             value=f"₹{prediction['fair_price']:.2f}" if not pd.isna(prediction['fair_price']) else "N/A"
         )
 
-    # Upside/Downside
+    # Main Takeaway Section
     st.markdown("---")
-    upside_col1, upside_col2, upside_col3 = st.columns([1, 2, 1])
+    st.markdown("### 🎯 Key Takeaway")
 
-    with upside_col2:
-        if not pd.isna(prediction['upside_downside_pct']):
+    if not pd.isna(prediction['upside_downside_pct']):
+        # Create two columns: left for text, right for gauge
+        takeaway_col1, takeaway_col2 = st.columns([1.2, 1])
+
+        with takeaway_col1:
             upside = prediction['upside_downside_pct']
 
+            # Large prominent text for upside/downside
             if upside > 0:
-                st.markdown(f"**Potential Upside: +{upside:.2f}%**")
-                st.markdown("The stock appears **undervalued** based on predicted fair P/E ratio.")
+                st.markdown(f"""
+                <div style='padding: 2rem; background-color: #d4edda; border-radius: 10px; border-left: 5px solid #28a745;'>
+                    <h1 style='color: #155724; margin: 0; font-size: 3rem;'>+{upside:.1f}%</h1>
+                    <h3 style='color: #155724; margin-top: 0.5rem;'>Potential Upside</h3>
+                    <p style='color: #155724; font-size: 1.1rem; margin-top: 1rem;'>
+                        The stock appears <strong>undervalued</strong> based on the predicted fair P/E ratio.
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
             else:
-                st.markdown(f"**Potential Downside: {upside:.2f}%**")
-                st.markdown("The stock appears **overvalued** based on predicted fair P/E ratio.")
-        else:
-            st.warning("Unable to calculate upside/downside. EPS data unavailable.")
+                st.markdown(f"""
+                <div style='padding: 2rem; background-color: #f8d7da; border-radius: 10px; border-left: 5px solid #dc3545;'>
+                    <h1 style='color: #721c24; margin: 0; font-size: 3rem;'>{upside:.1f}%</h1>
+                    <h3 style='color: #721c24; margin-top: 0.5rem;'>Potential Downside</h3>
+                    <p style='color: #721c24; font-size: 1.1rem; margin-top: 1rem;'>
+                        The stock appears <strong>overvalued</strong> based on the predicted fair P/E ratio.
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
+
+            # Add key contributors
+            st.markdown("")
+            key_factors = get_key_contributors(prediction)
+            st.markdown(f"**Key Contributors:** The prediction is primarily driven by {key_factors}.")
+
+        with takeaway_col2:
+            # Valuation gauge (without delta indicator)
+            if not pd.isna(prediction['current_pe']) and not pd.isna(prediction['predicted_pe']):
+                fig = go.Figure(go.Indicator(
+                    mode="gauge+number",
+                    value=prediction['current_pe'],
+                    domain={'x': [0, 1], 'y': [0, 1]},
+                    title={'text': "Current P/E vs Fair P/E", 'font': {'size': 18}},
+                    gauge={
+                        'axis': {'range': [None, max(prediction['current_pe'], prediction['predicted_pe']) * 1.5]},
+                        'bar': {'color': "darkblue"},
+                        'steps': [
+                            {'range': [0, prediction['predicted_pe'] * 0.8], 'color': "lightgreen"},
+                            {'range': [prediction['predicted_pe'] * 0.8, prediction['predicted_pe'] * 1.2], 'color': "lightyellow"},
+                            {'range': [prediction['predicted_pe'] * 1.2, max(prediction['current_pe'], prediction['predicted_pe']) * 1.5], 'color': "lightcoral"}
+                        ],
+                        'threshold': {
+                            'line': {'color': "red", 'width': 4},
+                            'thickness': 0.75,
+                            'value': prediction['predicted_pe']
+                        }
+                    }
+                ))
+
+                fig.update_layout(height=350, margin=dict(l=20, r=20, t=40, b=20))
+                st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning("Unable to calculate upside/downside. EPS data unavailable.")
 
     # Additional details
     st.markdown("---")
@@ -142,36 +240,6 @@ def display_prediction_results(prediction):
     with detail_col2:
         st.markdown(f"**EPS (Trailing 12M):** ₹{prediction['eps']:.2f}" if not pd.isna(prediction['eps']) else "**EPS:** N/A")
         st.markdown(f"**P/E Deviation:** {((prediction['current_pe'] - prediction['predicted_pe']) / prediction['predicted_pe'] * 100):.2f}%" if not pd.isna(prediction['current_pe']) and not pd.isna(prediction['predicted_pe']) else "**P/E Deviation:** N/A")
-
-    # Gauge chart for valuation
-    st.markdown("---")
-    st.markdown("### 🎯 Valuation Meter")
-
-    if not pd.isna(prediction['current_pe']) and not pd.isna(prediction['predicted_pe']):
-        fig = go.Figure(go.Indicator(
-            mode="gauge+number+delta",
-            value=prediction['current_pe'],
-            domain={'x': [0, 1], 'y': [0, 1]},
-            title={'text': "Current P/E vs Fair P/E", 'font': {'size': 24}},
-            delta={'reference': prediction['predicted_pe'], 'increasing': {'color': "red"}, 'decreasing': {'color': "green"}},
-            gauge={
-                'axis': {'range': [None, max(prediction['current_pe'], prediction['predicted_pe']) * 1.5]},
-                'bar': {'color': "darkblue"},
-                'steps': [
-                    {'range': [0, prediction['predicted_pe'] * 0.8], 'color': "lightgreen"},
-                    {'range': [prediction['predicted_pe'] * 0.8, prediction['predicted_pe'] * 1.2], 'color': "lightyellow"},
-                    {'range': [prediction['predicted_pe'] * 1.2, max(prediction['current_pe'], prediction['predicted_pe']) * 1.5], 'color': "lightcoral"}
-                ],
-                'threshold': {
-                    'line': {'color': "red", 'width': 4},
-                    'thickness': 0.75,
-                    'value': prediction['predicted_pe']
-                }
-            }
-        ))
-
-        fig.update_layout(height=300)
-        st.plotly_chart(fig, use_container_width=True)
 
 
 def main():
