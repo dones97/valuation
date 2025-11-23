@@ -92,14 +92,19 @@ def get_model_statistics(model):
 
 @st.cache_data
 def load_tickers():
-    """Load available stock tickers (NSE only)"""
+    """Load available stock tickers from NSE Universe"""
     try:
-        df = pd.read_csv('indian_stocks_tickers.csv')
-        # Filter to only NSE stocks
-        df = df[df['Exchange'] == 'NSE']
-        return df
+        df = pd.read_csv('NSE_Universe.csv')
+        # Rename columns for consistency
+        df = df.rename(columns={
+            'Ticker': 'Ticker',
+            'NAME OF COMPANY': 'Company Name'
+        })
+        # Add .NS suffix for yfinance compatibility
+        df['Ticker_YF'] = df['Ticker'] + '.NS'
+        return df[['Ticker', 'Company Name', 'Ticker_YF']]
     except FileNotFoundError:
-        st.error("Ticker file not found! Please ensure 'indian_stocks_tickers.csv' exists.")
+        st.error("Ticker file not found! Please ensure 'NSE_Universe.csv' exists.")
         return pd.DataFrame()
 
 
@@ -298,7 +303,7 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.markdown("**Or select from list:**")
 
-    ticker_options = tickers_df['Ticker'].tolist()
+    ticker_options = tickers_df['Ticker_YF'].tolist()
     company_names = tickers_df['Company Name'].tolist()
     display_options = [f"{ticker} - {name}" for ticker, name in zip(ticker_options, company_names)]
 
@@ -306,7 +311,7 @@ def main():
         "Available NSE stocks:",
         options=[""] + display_options,
         index=0,
-        help="Select from pre-loaded NSE stocks"
+        help="Select from 2,099+ NSE stocks"
     )
 
     # If user selected from dropdown, override the text input
