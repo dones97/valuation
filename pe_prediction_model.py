@@ -487,15 +487,20 @@ class PEPredictionModel:
         filepath : str
             Path to save the model
         """
+        from datetime import datetime
+
         model_data = {
             'model': self.model,
             'feature_names': self.feature_names,
             'sector_encoder': self.sector_encoder,
-            'industry_encoder': self.industry_encoder
+            'industry_encoder': self.industry_encoder,
+            'training_date': datetime.now().isoformat(),
+            'model_version': '1.0'
         }
 
         joblib.dump(model_data, filepath)
         print(f"\nModel saved to: {filepath}")
+        print(f"Training date: {model_data['training_date']}")
 
     def load_model(self, filepath='pe_prediction_model.pkl'):
         """
