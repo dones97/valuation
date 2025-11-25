@@ -53,9 +53,29 @@ st.markdown("""
 @st.cache_resource
 def load_model():
     """Load the trained P/E prediction model"""
+    import joblib
+    from datetime import datetime, timedelta
+
     try:
         model = PEPredictionModel('indian_stocks_tickers.csv')
         model.load_model('pe_prediction_model.pkl')
+
+        # Load model metadata to get training date
+        model_data = joblib.load('pe_prediction_model.pkl')
+        training_date_str = model_data.get('training_date', None)
+
+        if training_date_str:
+            training_date = datetime.fromisoformat(training_date_str)
+            days_old = (datetime.now() - training_date).days
+
+            # Store metadata in session state
+            if 'model_metadata' not in st.session_state:
+                st.session_state.model_metadata = {
+                    'training_date': training_date,
+                    'days_old': days_old,
+                    'is_stale': days_old > 60  # Flag if older than 60 days
+                }
+
         return model
     except FileNotFoundError:
         st.error("Model not found! Please train the model first by running 'pe_prediction_model.py'")
@@ -278,7 +298,7 @@ def display_prediction_results(prediction):
 def main():
     # Header
     st.markdown("<h1 class='main-header'>Indian Stock P/E Predictor</h1>", unsafe_allow_html=True)
-    st.markdown("<p class='sub-header'>Fair Valuation Estimator using Random Forest Machine Learning Model</p>", unsafe_allow_html=True)
+    st.markdown("<p class='sub-header'>AI-Powered Fair Valuation Analysis using Random Forest</p>", unsafe_allow_html=True)
 
     # Load model and data
     model = load_model()
@@ -345,6 +365,12 @@ def main():
         # Show some statistics about the model
         st.markdown("### About This Tool")
 
+        # Display model freshness warning if applicable
+        if 'model_metadata' in st.session_state:
+            metadata = st.session_state.model_metadata
+            if metadata['is_stale']:
+                st.warning(f"⚠️ Model is {metadata['days_old']} days old. Consider retraining for current market conditions.")
+
         col1, col2, col3 = st.columns(3)
 
         with col1:
@@ -365,6 +391,12 @@ def main():
             - Features: 26 fundamental metrics
             - Auto-updates predictions
             """)
+
+            # Display model training date
+            if 'model_metadata' in st.session_state:
+                metadata = st.session_state.model_metadata
+                st.markdown(f"**Last Trained:** {metadata['training_date'].strftime('%Y-%m-%d')}")
+                st.markdown(f"**Model Age:** {metadata['days_old']} days")
 
         with col3:
             st.markdown("**📊 How It Works**")
