@@ -1,0 +1,61 @@
+name: Retrain P/E Prediction Model
+
+on:
+  # Run on the 1st of every month at 2:00 AM UTC
+  schedule:
+    - cron: '0 2 1 * *'
+
+  # Allow manual trigger from GitHub Actions tab
+  workflow_dispatch:
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run model training
+        run: |
+          python pe_prediction_model.py
+
+      - name: Check if model was updated
+        id: check_changes
+        run: |
+          git diff --exit-code pe_prediction_model.pkl || echo "model_changed=true" >> $GITHUB_OUTPUT
+
+      - name: Commit and push updated model
+        if: steps.check_changes.outputs.model_changed == 'true'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add pe_prediction_model.pkl
+          git add stock_fundamental_data.csv
+          git add model_visualizations/
+          git commit -m "Auto-retrain model - $(date +'%Y-%m-%d')"
+          git push
+
+      - name: Create summary
+        if: always()
+        run: |
+          echo "## Model Retraining Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Date:** $(date +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.check_changes.outputs.model_changed }}" = "true" ]; then
+            echo "- **Model Updated:** Yes" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **Model Updated:** No changes detected" >> $GITHUB_STEP_SUMMARY
+          fi
