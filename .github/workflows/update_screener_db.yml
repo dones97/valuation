@@ -1,0 +1,94 @@
+name: Update Screener Database
+
+on:
+  # Run on the 1st of January, April, July, and October at 3:00 AM UTC
+  schedule:
+    - cron: '0 3 1 1,4,7,10 *'
+
+  # Allow manual trigger from GitHub Actions tab
+  workflow_dispatch:
+
+jobs:
+  update-screener-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180  # 3 hours max (for ~2099 stocks at 2s each)
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Update screener database
+        run: |
+          echo "Starting screener database update..."
+          python build_screener_database.py
+        continue-on-error: true  # Don't fail if some stocks can't be scraped
+
+      - name: Check database size
+        id: check_db
+        run: |
+          if [ -f "screener_data.db" ]; then
+            DB_SIZE=$(du -h screener_data.db | cut -f1)
+            echo "db_exists=true" >> $GITHUB_OUTPUT
+            echo "db_size=$DB_SIZE" >> $GITHUB_OUTPUT
+
+            # Count records
+            RECORD_COUNT=$(python -c "import sqlite3; conn = sqlite3.connect('screener_data.db'); cursor = conn.cursor(); cursor.execute('SELECT COUNT(*) FROM companies WHERE data_available = 1'); print(cursor.fetchone()[0]); conn.close()")
+            echo "record_count=$RECORD_COUNT" >> $GITHUB_OUTPUT
+          else
+            echo "db_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit and push updated database
+        if: steps.check_db.outputs.db_exists == 'true'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+          # Check if database changed
+          if git diff --quiet screener_data.db; then
+            echo "No changes to screener database"
+          else
+            git add screener_data.db
+            git add screener_scraping_results.csv
+            git commit -m "Update screener database - $(date +'%Y-%m-%d') - ${{ steps.check_db.outputs.record_count }} stocks"
+            git push
+          fi
+
+      - name: Create summary
+        if: always()
+        run: |
+          echo "## Screener Database Update Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Date:** $(date +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ steps.check_db.outputs.db_exists }}" = "true" ]; then
+            echo "- **Database Size:** ${{ steps.check_db.outputs.db_size }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Stocks in DB:** ${{ steps.check_db.outputs.record_count }}" >> $GITHUB_STEP_SUMMARY
+
+            # Check for errors in results CSV
+            if [ -f "screener_scraping_results.csv" ]; then
+              ERROR_COUNT=$(python -c "import pandas as pd; df = pd.read_csv('screener_scraping_results.csv'); print(sum(df['status'] == 'error'))")
+              SUCCESS_COUNT=$(python -c "import pandas as pd; df = pd.read_csv('screener_scraping_results.csv'); print(sum(df['status'] == 'success'))")
+              echo "- **Successful Scrapes:** $SUCCESS_COUNT" >> $GITHUB_STEP_SUMMARY
+              echo "- **Failed Scrapes:** $ERROR_COUNT" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "- **Error:** Database file not found" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "- The updated screener database will be used in the next monthly model retraining" >> $GITHUB_STEP_SUMMARY
+          echo "- Quarterly updates ensure fresh operational metrics for better predictions" >> $GITHUB_STEP_SUMMARY

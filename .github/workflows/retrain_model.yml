@@ -30,7 +30,7 @@ jobs:
 
       - name: Run model training
         run: |
-          python pe_prediction_model.py
+          python retrain_production_model.py
 
       - name: Check if model was updated
         id: check_changes
