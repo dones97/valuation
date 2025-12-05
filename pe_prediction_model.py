@@ -39,9 +39,94 @@ class PEPredictionModel:
         self.feature_names = []
         self.training_data = None
 
+    def fetch_screener_data(self, ticker):
+        """
+        Fetch additional fundamental data from screener database
+
+        Parameters:
+        -----------
+        ticker : str
+            Stock ticker symbol (without .NS suffix)
+
+        Returns:
+        --------
+        dict : Dictionary containing screener metrics
+        """
+        import sqlite3
+
+        try:
+            conn = sqlite3.connect('screener_data.db')
+
+            # Remove .NS suffix if present
+            clean_ticker = ticker.replace('.NS', '').replace('.BO', '')
+
+            screener_data = {}
+
+            # Get latest annual ratios (operational efficiency metrics)
+            query = f"""
+            SELECT debtor_days, inventory_days, days_payable,
+                   cash_conversion_cycle, working_capital_days, roce_percent
+            FROM annual_ratios
+            WHERE ticker = '{clean_ticker}'
+            ORDER BY year DESC LIMIT 1
+            """
+            df = pd.read_sql_query(query, conn)
+            if len(df) > 0:
+                screener_data['debtor_days'] = df['debtor_days'].iloc[0]
+                screener_data['inventory_days'] = df['inventory_days'].iloc[0]
+                screener_data['days_payable'] = df['days_payable'].iloc[0]
+                screener_data['cash_conversion_cycle'] = df['cash_conversion_cycle'].iloc[0]
+                screener_data['working_capital_days'] = df['working_capital_days'].iloc[0]
+                screener_data['screener_roce'] = df['roce_percent'].iloc[0]
+
+            # Get latest balance sheet data
+            query = f"""
+            SELECT equity_capital, reserves, borrowings, total_liabilities,
+                   fixed_assets, investments, total_assets
+            FROM balance_sheet
+            WHERE ticker = '{clean_ticker}'
+            ORDER BY year DESC LIMIT 1
+            """
+            df = pd.read_sql_query(query, conn)
+            if len(df) > 0:
+                equity = df['equity_capital'].iloc[0] if pd.notna(df['equity_capital'].iloc[0]) else 0
+                reserves = df['reserves'].iloc[0] if pd.notna(df['reserves'].iloc[0]) else 0
+                borrowings = df['borrowings'].iloc[0] if pd.notna(df['borrowings'].iloc[0]) else 0
+                total_assets = df['total_assets'].iloc[0]
+                fixed_assets = df['fixed_assets'].iloc[0]
+                investments = df['investments'].iloc[0]
+
+                # Calculate additional metrics
+                if pd.notna(total_assets) and total_assets > 0:
+                    screener_data['fixed_assets_ratio'] = fixed_assets / total_assets if pd.notna(fixed_assets) else np.nan
+                    screener_data['investment_ratio'] = investments / total_assets if pd.notna(investments) else np.nan
+
+                    total_equity = equity + reserves
+                    if total_equity > 0:
+                        screener_data['screener_debt_to_equity'] = borrowings / total_equity if pd.notna(borrowings) else np.nan
+
+            # Get latest P&L data for OPM
+            query = f"""
+            SELECT opm_percent, dividend_payout_percent
+            FROM annual_profit_loss
+            WHERE ticker = '{clean_ticker}'
+            ORDER BY year DESC LIMIT 1
+            """
+            df = pd.read_sql_query(query, conn)
+            if len(df) > 0:
+                screener_data['screener_opm'] = df['opm_percent'].iloc[0]
+                screener_data['screener_dividend_payout'] = df['dividend_payout_percent'].iloc[0]
+
+            conn.close()
+            return screener_data
+
+        except Exception as e:
+            # Silently return empty dict if screener data not available
+            return {}
+
     def fetch_stock_data(self, ticker):
         """
-        Fetch fundamental data for a single stock from yfinance
+        Fetch fundamental data for a single stock from yfinance + screener database
 
         Parameters:
         -----------
@@ -140,7 +225,11 @@ class PEPredictionModel:
             sector = info.get('sector', 'Unknown')
             industry = info.get('industry', 'Unknown')
 
-            return {
+            # Fetch additional data from screener database
+            screener_data = self.fetch_screener_data(ticker)
+
+            # Combine yfinance and screener data
+            result = {
                 'ticker': ticker,
                 'current_pe': current_pe,
                 'forward_pe': forward_pe,
@@ -169,8 +258,22 @@ class PEPredictionModel:
                 'payout_ratio': payout_ratio,
                 'beta': beta,
                 'sector': sector,
-                'industry': industry
+                'industry': industry,
+                # Screener-specific metrics
+                'debtor_days': screener_data.get('debtor_days', np.nan),
+                'inventory_days': screener_data.get('inventory_days', np.nan),
+                'days_payable': screener_data.get('days_payable', np.nan),
+                'cash_conversion_cycle': screener_data.get('cash_conversion_cycle', np.nan),
+                'working_capital_days': screener_data.get('working_capital_days', np.nan),
+                'screener_roce': screener_data.get('screener_roce', np.nan),
+                'fixed_assets_ratio': screener_data.get('fixed_assets_ratio', np.nan),
+                'investment_ratio': screener_data.get('investment_ratio', np.nan),
+                'screener_debt_to_equity': screener_data.get('screener_debt_to_equity', np.nan),
+                'screener_opm': screener_data.get('screener_opm', np.nan),
+                'screener_dividend_payout': screener_data.get('screener_dividend_payout', np.nan)
             }
+
+            return result
 
         except Exception as e:
             print(f"Error fetching data for {ticker}: {str(e)}")
@@ -236,7 +339,9 @@ class PEPredictionModel:
         df['industry_encoded'] = self.industry_encoder.fit_transform(df['industry'])
 
         # Select features for training (removed price_to_book to prevent data leakage)
+        # Now includes additional screener database metrics for operational efficiency
         feature_columns = [
+            # Core financial metrics (yfinance)
             'market_cap', 'revenue', 'net_income', 'ebitda', 'gross_profit',
             'roe', 'roa', 'roce',
             'profit_margins', 'operating_margins', 'gross_margins',
@@ -246,6 +351,12 @@ class PEPredictionModel:
             'current_ratio', 'quick_ratio',
             'dividend_yield', 'payout_ratio',
             'beta',
+            # Operational efficiency metrics (screener database)
+            'debtor_days', 'inventory_days', 'days_payable',
+            'cash_conversion_cycle', 'working_capital_days',
+            'screener_roce', 'fixed_assets_ratio', 'investment_ratio',
+            'screener_debt_to_equity', 'screener_opm', 'screener_dividend_payout',
+            # Categorical encodings
             'sector_encoded', 'industry_encoded'
         ]
 
@@ -303,12 +414,13 @@ class PEPredictionModel:
         print(f"Training samples: {len(X_train)} ({(1-test_size)*100:.0f}%)")
         print(f"Testing samples: {len(X_test)} ({test_size*100:.0f}%)")
 
-        # Initialize Random Forest
+        # Initialize Random Forest (Regularized configuration to reduce overfitting)
         self.model = RandomForestRegressor(
             n_estimators=100,
-            max_depth=15,
-            min_samples_split=5,
-            min_samples_leaf=2,
+            max_depth=12,              # Reduced from 15 to limit tree complexity
+            min_samples_split=10,      # Increased from 5 for more robust patterns
+            min_samples_leaf=4,        # Increased from 2 for better generalization
+            max_features=0.6,          # 60% of features per split (was 'sqrt')
             random_state=random_state,
             n_jobs=-1,
             verbose=1
