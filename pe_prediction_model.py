@@ -124,7 +124,7 @@ class PEPredictionModel:
             # Silently return empty dict if screener data not available
             return {}
 
-    def fetch_stock_data(self, ticker):
+    def fetch_stock_data(self, ticker, max_retries=3):
         """
         Fetch fundamental data for a single stock from yfinance + screener database
 
@@ -132,20 +132,28 @@ class PEPredictionModel:
         -----------
         ticker : str
             Stock ticker symbol
+        max_retries : int
+            Maximum number of retry attempts for yfinance API calls
 
         Returns:
         --------
         dict : Dictionary containing fundamental metrics
         """
-        try:
-            stock = yf.Ticker(ticker)
-            info = stock.info
+        import time as _time
 
-            # Get historical data for growth calculations
-            hist = stock.history(period='3y')
+        for attempt in range(max_retries):
+            try:
+                stock = yf.Ticker(ticker)
+                info = stock.info
 
-            if hist.empty or not info:
-                return None
+                # Get historical data for growth calculations
+                hist = stock.history(period='3y')
+
+                if hist.empty or not info:
+                    if attempt < max_retries - 1:
+                        _time.sleep(2 ** attempt)  # Exponential backoff
+                        continue
+                    return None
 
             # Basic valuation metrics
             current_pe = info.get('trailingPE', np.nan)
@@ -275,9 +283,15 @@ class PEPredictionModel:
 
             return result
 
-        except Exception as e:
-            print(f"Error fetching data for {ticker}: {str(e)}")
-            return None
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    print(f"Retry {attempt + 1}/{max_retries} for {ticker}: {str(e)}")
+                    _time.sleep(2 ** attempt)
+                    continue
+                print(f"Error fetching data for {ticker} after {max_retries} attempts: {str(e)}")
+                return None
+
+        return None
 
     def build_dataset(self, max_stocks=None):
         """
@@ -368,9 +382,13 @@ class PEPredictionModel:
         y = df[target].copy()
 
         # Handle missing values - fill with median for numeric columns
+        # Store medians for use at prediction time
+        self.training_medians = {}
         for col in X.columns:
             if X[col].dtype in ['float64', 'int64']:
-                X[col].fillna(X[col].median(), inplace=True)
+                median_val = X[col].median()
+                self.training_medians[col] = median_val
+                X[col].fillna(median_val, inplace=True)
 
         self.feature_names = feature_columns
 
@@ -606,13 +624,15 @@ class PEPredictionModel:
             'feature_names': self.feature_names,
             'sector_encoder': self.sector_encoder,
             'industry_encoder': self.industry_encoder,
+            'training_medians': getattr(self, 'training_medians', {}),
             'training_date': datetime.now().isoformat(),
-            'model_version': '1.0'
+            'model_version': '1.1'
         }
 
         joblib.dump(model_data, filepath)
         print(f"\nModel saved to: {filepath}")
         print(f"Training date: {model_data['training_date']}")
+        print(f"Training medians saved: {len(model_data['training_medians'])} features")
 
     def load_model(self, filepath='pe_prediction_model.pkl'):
         """
@@ -629,8 +649,11 @@ class PEPredictionModel:
         self.feature_names = model_data['feature_names']
         self.sector_encoder = model_data['sector_encoder']
         self.industry_encoder = model_data['industry_encoder']
+        self.training_medians = model_data.get('training_medians', {})
 
         print(f"Model loaded from: {filepath}")
+        if self.training_medians:
+            print(f"Training medians loaded: {len(self.training_medians)} features")
 
     def predict_pe(self, ticker):
         """
@@ -656,15 +679,29 @@ class PEPredictionModel:
 
         # Prepare features
         stock_df = pd.DataFrame([stock_data])
-        stock_df['sector_encoded'] = self.sector_encoder.transform([stock_data['sector']])[0]
-        stock_df['industry_encoded'] = self.industry_encoder.transform([stock_data['industry']])[0]
+
+        # Handle unknown sector/industry labels gracefully
+        try:
+            stock_df['sector_encoded'] = self.sector_encoder.transform([stock_data['sector']])[0]
+        except (ValueError, KeyError):
+            print(f"Unknown sector '{stock_data['sector']}', using fallback value -1")
+            stock_df['sector_encoded'] = -1
+
+        try:
+            stock_df['industry_encoded'] = self.industry_encoder.transform([stock_data['industry']])[0]
+        except (ValueError, KeyError):
+            print(f"Unknown industry '{stock_data['industry']}', using fallback value -1")
+            stock_df['industry_encoded'] = -1
 
         X = stock_df[self.feature_names].copy()
 
-        # Fill missing values
+        # Fill missing values using training medians (not single-row median which = NaN)
         for col in X.columns:
             if X[col].dtype in ['float64', 'int64']:
-                X[col].fillna(X[col].median(), inplace=True)
+                if col in self.training_medians:
+                    X[col].fillna(self.training_medians[col], inplace=True)
+                else:
+                    X[col].fillna(0, inplace=True)
 
         # Predict P/E
         predicted_pe = self.model.predict(X)[0]

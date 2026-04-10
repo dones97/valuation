@@ -13,13 +13,29 @@ print("RETRAINING PRODUCTION MODEL WITH REGULARIZED HYPERPARAMETERS")
 print("="*70)
 print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
-# Load high-quality dataset
-print("Loading high-quality stocks dataset...")
-high_quality_df = pd.read_csv('nse_high_quality_stocks.csv')
-print(f"Loaded {len(high_quality_df)} high-quality stocks\n")
-
 # Initialize model
 model = PEPredictionModel('indian_stocks_tickers.csv')
+
+# Load high-quality dataset
+print("Loading high-quality stocks dataset and fetching fresh data...")
+existing_df = pd.read_csv('nse_high_quality_stocks.csv')
+# Support both 'ticker' and 'Ticker' column naming
+ticker_col = 'ticker' if 'ticker' in existing_df.columns else 'Ticker'
+tickers = existing_df[ticker_col].tolist()
+
+print(f"Fetching fresh data for {len(tickers)} high-quality stocks...")
+fresh_data = []
+for i, ticker in enumerate(tickers):
+    if (i + 1) % 50 == 0:
+        print(f"Progress: {i + 1}/{len(tickers)} stocks fetched...")
+    data = model.fetch_stock_data(ticker)
+    if data:
+        fresh_data.append(data)
+
+high_quality_df = pd.DataFrame(fresh_data)
+# Save updated data back to csv so it gets committed by GitHub Actions
+high_quality_df.to_csv('nse_high_quality_stocks.csv', index=False)
+print(f"\nSaved {len(high_quality_df)} stocks with fresh data to nse_high_quality_stocks.csv\n")
 
 # Prepare features
 print("Preparing features...")

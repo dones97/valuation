@@ -35,16 +35,23 @@ jobs:
       - name: Check if model was updated
         id: check_changes
         run: |
-          git diff --exit-code pe_prediction_model.pkl || echo "model_changed=true" >> $GITHUB_OUTPUT
+          # Stage all output files first (handles new + modified)
+          git add pe_prediction_model.pkl
+          git add stock_fundamental_data.csv
+          git add nse_high_quality_stocks.csv
+          git add model_visualizations/
+          # Check staged changes
+          if git diff --cached --quiet; then
+            echo "No model changes detected"
+          else
+            echo "model_changed=true" >> $GITHUB_OUTPUT
+          fi
 
       - name: Commit and push updated model
         if: steps.check_changes.outputs.model_changed == 'true'
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add pe_prediction_model.pkl
-          git add stock_fundamental_data.csv
-          git add model_visualizations/
           git commit -m "Auto-retrain model - $(date +'%Y-%m-%d')"
           git push
 

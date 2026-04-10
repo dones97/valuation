@@ -348,15 +348,32 @@ def main():
             st.warning("Please enter a stock ticker or select from the list.")
         else:
             with st.spinner(f"Analyzing {selected_ticker}..."):
-                # Get prediction
-                prediction = model.predict_pe(selected_ticker)
+                prediction = None
+                last_error = None
+
+                # Try up to 2 times (yfinance can be flaky on cloud)
+                for attempt in range(2):
+                    try:
+                        prediction = model.predict_pe(selected_ticker)
+                        if prediction:
+                            break
+                        else:
+                            last_error = "No data returned (stock may lack P/E data or yfinance returned empty results)"
+                    except Exception as e:
+                        last_error = str(e)
+
+                    if attempt == 0 and not prediction:
+                        import time
+                        time.sleep(2)  # Brief pause before retry
 
                 if prediction:
                     # Display results
                     display_prediction_results(prediction)
-
                 else:
-                    st.error(f"Unable to analyze {selected_ticker}. The stock might not have sufficient data.")
+                    st.error(f"Unable to analyze {selected_ticker} after retrying.")
+                    if last_error:
+                        st.caption(f"Details: {last_error}")
+                    st.info("💡 This can happen if Yahoo Finance is throttling requests. Try waiting a few seconds.")
 
     else:
         # Welcome message
