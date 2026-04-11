@@ -155,133 +155,133 @@ class PEPredictionModel:
                         continue
                     return None
 
-            # Basic valuation metrics
-            current_pe = info.get('trailingPE', np.nan)
-            forward_pe = info.get('forwardPE', np.nan)
+                # Basic valuation metrics
+                current_pe = info.get('trailingPE', np.nan)
+                forward_pe = info.get('forwardPE', np.nan)
 
-            # Skip if no P/E ratio available
-            if pd.isna(current_pe) or current_pe <= 0 or current_pe > 200:
-                return None
+                # Skip if no P/E ratio available
+                if pd.isna(current_pe) or current_pe <= 0 or current_pe > 200:
+                    return None
 
-            # Financial metrics from yfinance
-            market_cap = info.get('marketCap', np.nan)
-            revenue = info.get('totalRevenue', np.nan)
-            net_income = info.get('netIncomeToCommon', np.nan)
-            total_assets = info.get('totalAssets', np.nan)
-            total_equity = info.get('totalStockholderEquity', np.nan)
-            operating_cash_flow = info.get('operatingCashFlow', np.nan)
-            free_cash_flow = info.get('freeCashFlow', np.nan)
-            total_debt = info.get('totalDebt', np.nan)
-            ebitda = info.get('ebitda', np.nan)
-            gross_profit = info.get('grossProfits', np.nan)
+                # Financial metrics from yfinance
+                market_cap = info.get('marketCap', np.nan)
+                revenue = info.get('totalRevenue', np.nan)
+                net_income = info.get('netIncomeToCommon', np.nan)
+                total_assets = info.get('totalAssets', np.nan)
+                total_equity = info.get('totalStockholderEquity', np.nan)
+                operating_cash_flow = info.get('operatingCashFlow', np.nan)
+                free_cash_flow = info.get('freeCashFlow', np.nan)
+                total_debt = info.get('totalDebt', np.nan)
+                ebitda = info.get('ebitda', np.nan)
+                gross_profit = info.get('grossProfits', np.nan)
 
-            # Pre-calculated ratios from yfinance
-            roe = info.get('returnOnEquity', np.nan)
-            roa = info.get('returnOnAssets', np.nan)
-            profit_margins = info.get('profitMargins', np.nan)
-            operating_margins = info.get('operatingMargins', np.nan)
-            gross_margins = info.get('grossMargins', np.nan)
+                # Pre-calculated ratios from yfinance
+                roe = info.get('returnOnEquity', np.nan)
+                roa = info.get('returnOnAssets', np.nan)
+                profit_margins = info.get('profitMargins', np.nan)
+                operating_margins = info.get('operatingMargins', np.nan)
+                gross_margins = info.get('grossMargins', np.nan)
 
-            # Book value (removed price_to_book due to data leakage - it contains current price)
+                # Book value (removed price_to_book due to data leakage - it contains current price)
 
-            # Growth metrics
-            revenue_growth = info.get('revenueGrowth', np.nan)
-            earnings_growth = info.get('earningsGrowth', np.nan)
-            earnings_quarterly_growth = info.get('earningsQuarterlyGrowth', np.nan)
+                # Growth metrics
+                revenue_growth = info.get('revenueGrowth', np.nan)
+                earnings_growth = info.get('earningsGrowth', np.nan)
+                earnings_quarterly_growth = info.get('earningsQuarterlyGrowth', np.nan)
 
-            # Debt metrics
-            debt_to_equity = info.get('debtToEquity', np.nan)
-            current_ratio = info.get('currentRatio', np.nan)
-            quick_ratio = info.get('quickRatio', np.nan)
+                # Debt metrics
+                debt_to_equity = info.get('debtToEquity', np.nan)
+                current_ratio = info.get('currentRatio', np.nan)
+                quick_ratio = info.get('quickRatio', np.nan)
 
-            # Dividend metrics
-            dividend_yield = info.get('dividendYield', np.nan)
-            payout_ratio = info.get('payoutRatio', np.nan)
+                # Dividend metrics
+                dividend_yield = info.get('dividendYield', np.nan)
+                payout_ratio = info.get('payoutRatio', np.nan)
 
-            # Beta and volatility
-            beta = info.get('beta', np.nan)
+                # Beta and volatility
+                beta = info.get('beta', np.nan)
 
-            # Calculate additional ratios if data available
-            # ROCE (Return on Capital Employed)
-            roce = np.nan
-            if not pd.isna(ebitda) and not pd.isna(total_assets) and not pd.isna(total_debt):
-                capital_employed = total_assets - (total_assets - total_equity - total_debt)
-                if capital_employed > 0:
-                    roce = ebitda / capital_employed
+                # Calculate additional ratios if data available
+                # ROCE (Return on Capital Employed)
+                roce = np.nan
+                if not pd.isna(ebitda) and not pd.isna(total_assets) and not pd.isna(total_debt):
+                    capital_employed = total_assets - (total_assets - total_equity - total_debt)
+                    if capital_employed > 0:
+                        roce = ebitda / capital_employed
 
-            # FCF Margin
-            fcf_margin = np.nan
-            if not pd.isna(free_cash_flow) and not pd.isna(revenue) and revenue > 0:
-                fcf_margin = free_cash_flow / revenue
+                # FCF Margin
+                fcf_margin = np.nan
+                if not pd.isna(free_cash_flow) and not pd.isna(revenue) and revenue > 0:
+                    fcf_margin = free_cash_flow / revenue
 
-            # FCF to Net Income ratio
-            fcf_to_net_income = np.nan
-            if not pd.isna(free_cash_flow) and not pd.isna(net_income) and net_income > 0:
-                fcf_to_net_income = free_cash_flow / net_income
+                # FCF to Net Income ratio
+                fcf_to_net_income = np.nan
+                if not pd.isna(free_cash_flow) and not pd.isna(net_income) and net_income > 0:
+                    fcf_to_net_income = free_cash_flow / net_income
 
-            # Gross Profit to Total Assets
-            gp_to_assets = np.nan
-            if not pd.isna(gross_profit) and not pd.isna(total_assets) and total_assets > 0:
-                gp_to_assets = gross_profit / total_assets
+                # Gross Profit to Total Assets
+                gp_to_assets = np.nan
+                if not pd.isna(gross_profit) and not pd.isna(total_assets) and total_assets > 0:
+                    gp_to_assets = gross_profit / total_assets
 
-            # Asset turnover
-            asset_turnover = np.nan
-            if not pd.isna(revenue) and not pd.isna(total_assets) and total_assets > 0:
-                asset_turnover = revenue / total_assets
+                # Asset turnover
+                asset_turnover = np.nan
+                if not pd.isna(revenue) and not pd.isna(total_assets) and total_assets > 0:
+                    asset_turnover = revenue / total_assets
 
-            # Get sector and industry
-            sector = info.get('sector', 'Unknown')
-            industry = info.get('industry', 'Unknown')
+                # Get sector and industry
+                sector = info.get('sector', 'Unknown')
+                industry = info.get('industry', 'Unknown')
 
-            # Fetch additional data from screener database
-            screener_data = self.fetch_screener_data(ticker)
+                # Fetch additional data from screener database
+                screener_data = self.fetch_screener_data(ticker)
 
-            # Combine yfinance and screener data
-            result = {
-                'ticker': ticker,
-                'current_pe': current_pe,
-                'forward_pe': forward_pe,
-                'market_cap': market_cap,
-                'revenue': revenue,
-                'net_income': net_income,
-                'ebitda': ebitda,
-                'gross_profit': gross_profit,
-                'roe': roe,
-                'roa': roa,
-                'roce': roce,
-                'profit_margins': profit_margins,
-                'operating_margins': operating_margins,
-                'gross_margins': gross_margins,
-                'fcf_margin': fcf_margin,
-                'fcf_to_net_income': fcf_to_net_income,
-                'gp_to_assets': gp_to_assets,
-                'asset_turnover': asset_turnover,
-                'revenue_growth': revenue_growth,
-                'earnings_growth': earnings_growth,
-                'earnings_quarterly_growth': earnings_quarterly_growth,
-                'debt_to_equity': debt_to_equity,
-                'current_ratio': current_ratio,
-                'quick_ratio': quick_ratio,
-                'dividend_yield': dividend_yield,
-                'payout_ratio': payout_ratio,
-                'beta': beta,
-                'sector': sector,
-                'industry': industry,
-                # Screener-specific metrics
-                'debtor_days': screener_data.get('debtor_days', np.nan),
-                'inventory_days': screener_data.get('inventory_days', np.nan),
-                'days_payable': screener_data.get('days_payable', np.nan),
-                'cash_conversion_cycle': screener_data.get('cash_conversion_cycle', np.nan),
-                'working_capital_days': screener_data.get('working_capital_days', np.nan),
-                'screener_roce': screener_data.get('screener_roce', np.nan),
-                'fixed_assets_ratio': screener_data.get('fixed_assets_ratio', np.nan),
-                'investment_ratio': screener_data.get('investment_ratio', np.nan),
-                'screener_debt_to_equity': screener_data.get('screener_debt_to_equity', np.nan),
-                'screener_opm': screener_data.get('screener_opm', np.nan),
-                'screener_dividend_payout': screener_data.get('screener_dividend_payout', np.nan)
-            }
+                # Combine yfinance and screener data
+                result = {
+                    'ticker': ticker,
+                    'current_pe': current_pe,
+                    'forward_pe': forward_pe,
+                    'market_cap': market_cap,
+                    'revenue': revenue,
+                    'net_income': net_income,
+                    'ebitda': ebitda,
+                    'gross_profit': gross_profit,
+                    'roe': roe,
+                    'roa': roa,
+                    'roce': roce,
+                    'profit_margins': profit_margins,
+                    'operating_margins': operating_margins,
+                    'gross_margins': gross_margins,
+                    'fcf_margin': fcf_margin,
+                    'fcf_to_net_income': fcf_to_net_income,
+                    'gp_to_assets': gp_to_assets,
+                    'asset_turnover': asset_turnover,
+                    'revenue_growth': revenue_growth,
+                    'earnings_growth': earnings_growth,
+                    'earnings_quarterly_growth': earnings_quarterly_growth,
+                    'debt_to_equity': debt_to_equity,
+                    'current_ratio': current_ratio,
+                    'quick_ratio': quick_ratio,
+                    'dividend_yield': dividend_yield,
+                    'payout_ratio': payout_ratio,
+                    'beta': beta,
+                    'sector': sector,
+                    'industry': industry,
+                    # Screener-specific metrics
+                    'debtor_days': screener_data.get('debtor_days', np.nan),
+                    'inventory_days': screener_data.get('inventory_days', np.nan),
+                    'days_payable': screener_data.get('days_payable', np.nan),
+                    'cash_conversion_cycle': screener_data.get('cash_conversion_cycle', np.nan),
+                    'working_capital_days': screener_data.get('working_capital_days', np.nan),
+                    'screener_roce': screener_data.get('screener_roce', np.nan),
+                    'fixed_assets_ratio': screener_data.get('fixed_assets_ratio', np.nan),
+                    'investment_ratio': screener_data.get('investment_ratio', np.nan),
+                    'screener_debt_to_equity': screener_data.get('screener_debt_to_equity', np.nan),
+                    'screener_opm': screener_data.get('screener_opm', np.nan),
+                    'screener_dividend_payout': screener_data.get('screener_dividend_payout', np.nan)
+                }
 
-            return result
+                return result
 
             except Exception as e:
                 if attempt < max_retries - 1:
