@@ -51,7 +51,7 @@ st.markdown("""
 
 
 @st.cache_resource
-def load_model():
+def load_model(version=2):
     """Load the trained P/E prediction model"""
     import joblib
     from datetime import datetime, timedelta
@@ -301,7 +301,7 @@ def main():
     st.markdown("<p class='sub-header'>AI-Powered Fair Valuation Analysis using Random Forest</p>", unsafe_allow_html=True)
 
     # Load model and data
-    model = load_model()
+    model = load_model(version=2)
     tickers_df = load_tickers()
 
     if model is None or tickers_df.empty:
