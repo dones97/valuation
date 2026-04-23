@@ -181,17 +181,20 @@ class ScreenerScraper:
         Handles:
         - Commas: "1,234.56" -> 1234.56
         - Percentages: "12.5%" -> 12.5
+        - Currency/Units: "₹ 100 Cr." -> 100
         - Empty/missing: "" -> None
         """
         if not text or text.strip() in ['', '-', 'N/A']:
             return None
-
-        # Remove commas and percentage signs
-        text = text.replace(',', '').replace('%', '').strip()
+        
+        orig = text
+        # Remove commas, percentage signs, rupee symbols, and unit texts
+        text = text.replace(',', '').replace('%', '').replace('₹', '').replace('Cr.', '').replace('Rs', '').strip()
 
         try:
             return float(text)
-        except:
+        except Exception as e:
+            print(f"Failed to parse '{orig}' into float. Cleaned text: '{text}'. Error: {e}")
             return None
 
     def scrape_stock(self, ticker: str) -> Dict:
@@ -257,7 +260,7 @@ class ScreenerScraper:
             return {'ticker': ticker, 'status': 'error', 'error': str(e)}
 
     def _scrape_company_info(self, soup: BeautifulSoup, ticker: str) -> Dict:
-        """Extract company basic information"""
+        """Extract company basic information including sector and industry"""
         info = {'ticker': ticker}
 
         # Company name
@@ -265,15 +268,29 @@ class ScreenerScraper:
         if name_elem:
             info['company_name'] = name_elem.text.strip()
 
+        # Sector and Industry
+        peers = soup.find('section', id='peers')
+        if peers:
+            links = peers.find_all('a')
+            # Extract breadcrumbs that map to sector/industry
+            breadcrumbs = [link.text.strip() for link in links 
+                           if '/market/' in link.get('href', '').lower()]
+            
+            if len(breadcrumbs) >= 1:
+                info['sector'] = breadcrumbs[0]  # E.g., Energy
+            if len(breadcrumbs) >= 2:
+                info['industry'] = breadcrumbs[-1]  # E.g., Refineries & Marketing
+
         return info
 
     def _scrape_key_metrics(self, soup: BeautifulSoup, ticker: str) -> Dict:
         """Extract key metrics from top ratios section"""
         metrics = {'ticker': ticker}
 
-        ratios_section = soup.find('div', id='top-ratios')
+        # The DOM changed from <div id="top-ratios"> to <ul id="top-ratios">
+        ratios_section = soup.find('ul', id='top-ratios')
         if ratios_section:
-            ratio_items = ratios_section.find_all('li', class_='flex-row')
+            ratio_items = ratios_section.find_all('li')
 
             for item in ratio_items:
                 name_elem = item.find('span', class_='name')
@@ -604,11 +621,11 @@ class ScreenerScraper:
         timestamp = datetime.now().isoformat()
 
         try:
-            # Company info
+            # Update companies table
             cursor.execute('''
-                INSERT OR REPLACE INTO companies (ticker, company_name, last_updated, data_available)
-                VALUES (?, ?, ?, ?)
-            ''', (ticker, company_info.get('company_name'), timestamp, True))
+                INSERT OR REPLACE INTO companies (ticker, company_name, sector, industry, last_updated, data_available)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (ticker, company_info.get('company_name'), company_info.get('sector'), company_info.get('industry'), timestamp, True))
 
             # Key metrics
             if key_metrics:
