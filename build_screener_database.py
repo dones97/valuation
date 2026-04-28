@@ -38,15 +38,10 @@ def main():
     existing_tickers = set(existing['ticker'].tolist())
     print(f"    Already scraped: {len(existing_tickers)} stocks")
 
-    # Determine what to scrape
-    new_tickers = [t for t in all_tickers if t not in existing_tickers]
-
-    if new_tickers:
-        print(f"\n[3] Scraping {len(new_tickers)} new stocks...")
-        to_scrape = new_tickers
-    else:
-        print(f"\n[3] All stocks already scraped. Refreshing all {len(all_tickers)} stocks...")
-        to_scrape = all_tickers
+    # FORCE REBUILD: We need to rebuild the entire database to apply the recent scraper fixes
+    # to all existing stocks, because they currently have NULL values for market cap, etc.
+    print(f"\n[3] Forcing full refresh of all {len(all_tickers)} stocks to apply fixes...")
+    to_scrape = all_tickers
 
     # Scrape with rate limiting
     print(f"\n    Starting scrape at {time.strftime('%H:%M:%S')}")
