@@ -264,7 +264,7 @@ class ScreenerScraper:
         info = {'ticker': ticker}
 
         # Company name
-        name_elem = soup.find('h1', class_='company-name')
+        name_elem = soup.find('h1')
         if name_elem:
             info['company_name'] = name_elem.text.strip()
 
@@ -360,7 +360,7 @@ class ScreenerScraper:
             if len(cols) < 2:
                 continue
 
-            row_name = cols[0].text.strip()
+            row_name = cols[0].text.replace('\xa0+', '').replace('+', '').strip()
             if row_name not in row_mapping:
                 continue
 
@@ -424,7 +424,7 @@ class ScreenerScraper:
             if len(cols) < 2:
                 continue
 
-            row_name = cols[0].text.strip()
+            row_name = cols[0].text.replace('\xa0+', '').replace('+', '').strip()
             if row_name not in row_mapping:
                 continue
 
@@ -482,7 +482,7 @@ class ScreenerScraper:
             if len(cols) < 2:
                 continue
 
-            row_name = cols[0].text.strip()
+            row_name = cols[0].text.replace('\xa0+', '').replace('+', '').strip()
             if row_name not in row_mapping:
                 continue
 
@@ -534,7 +534,7 @@ class ScreenerScraper:
             if len(cols) < 2:
                 continue
 
-            row_name = cols[0].text.strip()
+            row_name = cols[0].text.replace('\xa0+', '').replace('+', '').strip()
             if row_name not in row_mapping:
                 continue
 
@@ -588,7 +588,7 @@ class ScreenerScraper:
             if len(cols) < 2:
                 continue
 
-            row_name = cols[0].text.strip()
+            row_name = cols[0].text.replace('\xa0+', '').replace('+', '').strip()
             if row_name not in row_mapping:
                 continue
 
