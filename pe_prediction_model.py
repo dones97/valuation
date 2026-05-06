@@ -137,7 +137,28 @@ class PEPredictionModel:
     ]
 
     def _make_session(self):
-        """Return a requests.Session with retry adapter and random user-agent."""
+        """
+        Return the best available HTTP session for yfinance.
+
+        Priority:
+        1. curl_cffi Session impersonating Chrome (bypasses TLS fingerprinting)
+        2. requests.Session with urllib3 Retry adapter (plain fallback)
+
+        Yahoo Finance uses TLS fingerprinting to block cloud servers.
+        A user-agent string alone is NOT enough — the TLS handshake must also
+        look like a real browser.  curl_cffi replicates Chrome's TLS/HTTP2
+        fingerprint at the C layer, which is why it works on Streamlit Cloud
+        when plain requests does not.
+        """
+        try:
+            from curl_cffi import requests as curl_requests
+            # Impersonate a recent Chrome version — yfinance accepts this natively
+            session = curl_requests.Session(impersonate="chrome124")
+            return session
+        except ImportError:
+            pass
+
+        # Fallback: standard requests with retry adapter
         import random
         import requests
         from requests.adapters import HTTPAdapter
@@ -160,18 +181,24 @@ class PEPredictionModel:
 
     def _fetch_info_with_retry(self, ticker, max_retries=5):
         """
-        Fetch yfinance .info dict with robust retry + backoff + user-agent rotation.
+        Fetch yfinance .info dict with robust retry + backoff.
         Returns (info_dict, ticker_used) or (None, ticker_used) on failure.
         """
         import time as _time
         import random
 
-        # Build a list of tickers to try: primary first, then .NS fallback for .BO tickers
+        # Try the primary ticker, then .NS fallback for .BO tickers (and bare tickers)
         candidates = [ticker]
         if ticker.upper().endswith('.BO'):
             candidates.append(ticker[:-3] + '.NS')
         elif not ticker.upper().endswith('.NS') and '.' not in ticker:
             candidates.append(ticker + '.NS')
+
+        meaningful_keys = {
+            'currentPrice', 'regularMarketPrice', 'marketCap',
+            'trailingPE', 'forwardPE', 'trailingEps',
+            'returnOnEquity', 'profitMargins', 'totalRevenue'
+        }
 
         for t in candidates:
             for attempt in range(max_retries):
@@ -180,29 +207,22 @@ class PEPredictionModel:
                     stock = yf.Ticker(t, session=session)
                     info = stock.info
 
-                    # yfinance returns a minimal stub dict on throttle/missing tickers
-                    # A real response has at least one price or fundamental field
-                    meaningful_keys = {
-                        'currentPrice', 'regularMarketPrice', 'marketCap',
-                        'trailingPE', 'forwardPE', 'trailingEps',
-                        'returnOnEquity', 'profitMargins', 'totalRevenue'
-                    }
                     if info and meaningful_keys.intersection(info.keys()):
                         return info, t   # success
 
-                    # Empty / stub response — wait and retry
+                    # Stub / empty response — back off and retry
                     wait = (2 ** attempt) + random.uniform(0.5, 2.0)
-                    print(f"[yfinance] Empty info for {t} (attempt {attempt+1}/{max_retries}), "
+                    print(f"[yfinance] Stub info for {t} (attempt {attempt+1}/{max_retries}), "
                           f"waiting {wait:.1f}s…")
                     _time.sleep(wait)
 
                 except Exception as exc:
                     wait = (2 ** attempt) + random.uniform(0.5, 2.0)
-                    print(f"[yfinance] Exception for {t} attempt {attempt+1}: {exc}; "
+                    print(f"[yfinance] Error for {t} attempt {attempt+1}: {exc}; "
                           f"waiting {wait:.1f}s…")
                     _time.sleep(wait)
 
-        return None, ticker   # all candidates and retries exhausted
+        return None, ticker
 
     def fetch_stock_data(self, ticker, max_retries=5):
         """
