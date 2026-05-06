@@ -55,6 +55,18 @@ def load_model(version=2):
     """Load the trained P/E prediction model"""
     import joblib
     from datetime import datetime, timedelta
+    import sklearn
+
+    # Guard: the .pkl was trained with sklearn 1.8.x; running on an older version
+    # causes silent model corruption (returns nonsense or crashes at predict time).
+    sklearn_ver = tuple(int(x) for x in sklearn.__version__.split(".")[:2])
+    if sklearn_ver < (1, 8):
+        st.error(
+            f"⚠️ scikit-learn version mismatch: model requires ≥1.8, "
+            f"but environment has {sklearn.__version__}. "
+            "Reboot the app after requirements.txt is updated."
+        )
+        return None
 
     try:
         model = PEPredictionModel('indian_stocks_tickers.csv')
@@ -80,6 +92,10 @@ def load_model(version=2):
     except FileNotFoundError:
         st.error("Model not found! Please train the model first by running 'pe_prediction_model.py'")
         return None
+    except Exception as e:
+        st.error(f"Failed to load model: {e}")
+        return None
+
 
 
 def get_model_statistics(model):
