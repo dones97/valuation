@@ -224,113 +224,287 @@ class PEPredictionModel:
 
         return None, ticker
 
-    def fetch_stock_data(self, ticker, max_retries=5):
+    def _fetch_from_screener_db(self, ticker):
         """
-        Fetch fundamental data for a single stock from yfinance + screener database.
+        Pull all available fundamental data from the local screener SQLite DB.
+
+        The screener DB is committed to the repo and is always available on both
+        local and cloud environments — no network calls required.
+
+        Returns a dict of fundamental fields (NaN where data is missing).
+        """
+        import sqlite3
+
+        clean = ticker.replace('.NS', '').replace('.BO', '').upper()
+        out = {}
+
+        try:
+            conn = sqlite3.connect('screener_data.db')
+
+            # ── key_metrics: price, PE, ROE, ROCE, market cap, dividend yield ──
+            row = conn.execute(
+                "SELECT market_cap, current_price, stock_pe, roe_percent, "
+                "roce_percent, dividend_yield "
+                "FROM key_metrics WHERE ticker=? LIMIT 1", (clean,)
+            ).fetchone()
+            if row:
+                out['market_cap_cr'] = row[0]   # crores; convert later
+                out['current_price_db'] = row[1]
+                out['current_pe_db'] = row[2]
+                out['roe_db'] = row[3] / 100.0 if row[3] is not None else np.nan
+                out['roce_db'] = row[4] / 100.0 if row[4] is not None else np.nan
+                out['dividend_yield_db'] = row[5] / 100.0 if row[5] is not None else np.nan
+
+            # ── companies: sector / industry ──
+            row = conn.execute(
+                "SELECT sector, industry, company_name FROM companies WHERE ticker=? LIMIT 1",
+                (clean,)
+            ).fetchone()
+            if row:
+                out['sector_db'] = row[0] or 'Unknown'
+                out['industry_db'] = row[1] or 'Unknown'
+                out['company_name_db'] = row[2] or clean
+
+            # ── annual_profit_loss: revenue, net income, EPS, margins ──
+            rows = conn.execute(
+                "SELECT year, sales, net_profit, eps, opm_percent, dividend_payout_percent "
+                "FROM annual_profit_loss WHERE ticker=? ORDER BY year DESC LIMIT 3",
+                (clean,)
+            ).fetchall()
+            if rows:
+                latest = rows[0]
+                sales = latest[1]
+                net_profit = latest[2]
+                eps = latest[3]
+                opm = latest[4]
+                div_payout = latest[5]
+
+                out['revenue_db'] = (sales * 1e7) if sales is not None else np.nan  # cr → INR
+                out['net_income_db'] = (net_profit * 1e7) if net_profit is not None else np.nan
+                out['eps_db'] = eps  # already per share (INR)
+                out['profit_margins_db'] = (net_profit / sales) if (sales and net_profit) else np.nan
+                out['operating_margins_db'] = opm / 100.0 if opm is not None else np.nan
+                out['screener_dividend_payout_db'] = div_payout / 100.0 if div_payout is not None else np.nan
+
+                # Revenue growth YoY
+                if len(rows) >= 2 and rows[1][1] and rows[0][1]:
+                    out['revenue_growth_db'] = (rows[0][1] - rows[1][1]) / abs(rows[1][1])
+                # Earnings growth YoY
+                if len(rows) >= 2 and rows[1][2] and rows[0][2]:
+                    out['earnings_growth_db'] = (rows[0][2] - rows[1][2]) / abs(rows[1][2])
+
+            # ── balance_sheet: debt/equity, assets ──
+            row = conn.execute(
+                "SELECT equity_capital, reserves, borrowings, total_assets, "
+                "fixed_assets, investments "
+                "FROM balance_sheet WHERE ticker=? ORDER BY year DESC LIMIT 1",
+                (clean,)
+            ).fetchone()
+            if row:
+                equity = (row[0] or 0) + (row[1] or 0)
+                borrowings = row[2] or 0
+                total_assets = row[3]
+                fixed_assets = row[4]
+                investments = row[5]
+
+                if equity > 0:
+                    out['debt_to_equity_db'] = borrowings / equity
+                if total_assets and total_assets > 0:
+                    out['total_assets_db'] = total_assets * 1e7
+                    if fixed_assets is not None:
+                        out['fixed_assets_ratio'] = fixed_assets / total_assets
+                    if investments is not None:
+                        out['investment_ratio'] = investments / total_assets
+                    if out.get('revenue_db'):
+                        out['asset_turnover_db'] = out['revenue_db'] / (total_assets * 1e7)
+                    if out.get('net_income_db'):
+                        out['roa_db'] = out['net_income_db'] / (total_assets * 1e7)
+
+            # ── cash_flow ──
+            row = conn.execute(
+                "SELECT cash_from_operating_activity, cash_from_investing_activity "
+                "FROM cash_flow WHERE ticker=? ORDER BY year DESC LIMIT 1",
+                (clean,)
+            ).fetchone()
+            if row:
+                op_cf = row[0]
+                inv_cf = row[1]
+                if op_cf is not None and inv_cf is not None:
+                    fcf_cr = op_cf + inv_cf   # free cash flow in crores
+                    out['fcf_db'] = fcf_cr * 1e7
+                    if out.get('revenue_db'):
+                        out['fcf_margin_db'] = (fcf_cr * 1e7) / out['revenue_db']
+                    if out.get('net_income_db') and out['net_income_db'] != 0:
+                        out['fcf_to_net_income_db'] = (fcf_cr * 1e7) / out['net_income_db']
+
+            # ── annual_ratios (already fetched in fetch_screener_data) ──
+            row = conn.execute(
+                "SELECT debtor_days, inventory_days, days_payable, "
+                "cash_conversion_cycle, working_capital_days, roce_percent "
+                "FROM annual_ratios WHERE ticker=? ORDER BY year DESC LIMIT 1",
+                (clean,)
+            ).fetchone()
+            if row:
+                out['debtor_days'] = row[0]
+                out['inventory_days'] = row[1]
+                out['days_payable'] = row[2]
+                out['cash_conversion_cycle'] = row[3]
+                out['working_capital_days'] = row[4]
+                out['screener_roce'] = (row[5] / 100.0) if row[5] is not None else np.nan
+
+            conn.close()
+        except Exception as e:
+            print(f"[screener_db] Error fetching {clean}: {e}")
+
+        return out
+
+    def fetch_stock_data(self, ticker, max_retries=3):
+        """
+        Fetch fundamental data for a single stock.
+
+        Strategy (cloud-proof):
+        1. Always query the local screener DB first — never fails, no network.
+        2. Try yfinance .info to supplement/override with fresher data.
+        3. If yfinance is unavailable (throttled / cloud IP blocked), fall back
+           entirely to screener DB values.
+        4. Return None only if BOTH sources have no usable data.
 
         Parameters
         ----------
         ticker : str
             Stock ticker symbol (e.g. RELIANCE.NS or RELIANCE.BO)
         max_retries : int
-            Maximum retry attempts passed to the internal fetch helper.
+            Max yfinance retry attempts.
 
         Returns
         -------
-        dict | None : Dictionary with fundamental metrics, or None on failure.
+        dict | None
         """
-        info, used_ticker = self._fetch_info_with_retry(ticker, max_retries=max_retries)
+        # ── Step 1: screener DB (always works) ──
+        db = self._fetch_from_screener_db(ticker)
 
+        # ── Step 2: yfinance .info (best-effort, may fail on cloud) ──
+        info, used_ticker = self._fetch_info_with_retry(ticker, max_retries=max_retries)
         if not info:
-            print(f"[fetch_stock_data] Could not retrieve info for {ticker}")
+            print(f"[fetch_stock_data] yfinance unavailable for {ticker}; using screener DB only")
+            info = {}
+            used_ticker = ticker.replace('.BO', '.NS') if '.BO' in ticker.upper() else ticker
+
+        # ── Step 3: merge — yfinance preferred where available, DB as fallback ──
+
+        def _yf(key, default=np.nan):
+            v = info.get(key, default)
+            return default if v is None else v
+
+        def _db(key, default=np.nan):
+            v = db.get(key, default)
+            return default if v is None else v
+
+        # Require at least price OR fundamental DB data to proceed
+        has_price = bool(info.get('currentPrice') or info.get('regularMarketPrice')
+                         or db.get('current_price_db'))
+        has_fundamentals = bool(db.get('revenue_db') or db.get('eps_db'))
+        if not has_price and not has_fundamentals:
+            print(f"[fetch_stock_data] No data from any source for {ticker}")
             return None
 
-        # Basic valuation metrics
-        current_pe = info.get('trailingPE', np.nan)
-        forward_pe = info.get('forwardPE', np.nan)
+        # Valuation
+        current_pe = _yf('trailingPE') if not pd.isna(_yf('trailingPE')) else _db('current_pe_db')
+        forward_pe = _yf('forwardPE')
 
-        # For prediction we need *some* P/E; if truly absent we use NaN and
-        # let the model fall back to training medians — we no longer hard-bail here
-        # so that users can still get a predicted fair P/E for stocks without trailing P/E.
-        # (The fetch_stock_data guard for training still drops rows missing P/E
-        #  via build_dataset → prepare_features → target filter.)
+        # Financials (yfinance in native currency; screener DB in crores → convert)
+        market_cap = _yf('marketCap') if not pd.isna(_yf('marketCap')) \
+            else (_db('market_cap_cr') * 1e7 if not pd.isna(_db('market_cap_cr')) else np.nan)
+        revenue = _yf('totalRevenue') if not pd.isna(_yf('totalRevenue')) else _db('revenue_db')
+        net_income = _yf('netIncomeToCommon') if not pd.isna(_yf('netIncomeToCommon')) \
+            else _db('net_income_db')
+        total_assets = _yf('totalAssets') if not pd.isna(_yf('totalAssets')) \
+            else _db('total_assets_db')
+        total_equity = _yf('totalStockholderEquity')
+        free_cash_flow = _yf('freeCashFlow') if not pd.isna(_yf('freeCashFlow')) \
+            else _db('fcf_db')
+        total_debt = _yf('totalDebt')
+        ebitda = _yf('ebitda')
+        gross_profit = _yf('grossProfits')
 
-        # Financial metrics from yfinance
-        market_cap = info.get('marketCap', np.nan)
-        revenue = info.get('totalRevenue', np.nan)
-        net_income = info.get('netIncomeToCommon', np.nan)
-        total_assets = info.get('totalAssets', np.nan)
-        total_equity = info.get('totalStockholderEquity', np.nan)
-        operating_cash_flow = info.get('operatingCashFlow', np.nan)
-        free_cash_flow = info.get('freeCashFlow', np.nan)
-        total_debt = info.get('totalDebt', np.nan)
-        ebitda = info.get('ebitda', np.nan)
-        gross_profit = info.get('grossProfits', np.nan)
+        # Ratios
+        roe = _yf('returnOnEquity') if not pd.isna(_yf('returnOnEquity')) else _db('roe_db')
+        roa = _yf('returnOnAssets') if not pd.isna(_yf('returnOnAssets')) else _db('roa_db')
+        profit_margins = _yf('profitMargins') if not pd.isna(_yf('profitMargins')) \
+            else _db('profit_margins_db')
+        operating_margins = _yf('operatingMargins') if not pd.isna(_yf('operatingMargins')) \
+            else _db('operating_margins_db')
+        gross_margins = _yf('grossMargins')
 
-        # Pre-calculated ratios from yfinance
-        roe = info.get('returnOnEquity', np.nan)
-        roa = info.get('returnOnAssets', np.nan)
-        profit_margins = info.get('profitMargins', np.nan)
-        operating_margins = info.get('operatingMargins', np.nan)
-        gross_margins = info.get('grossMargins', np.nan)
+        # Growth
+        revenue_growth = _yf('revenueGrowth') if not pd.isna(_yf('revenueGrowth')) \
+            else _db('revenue_growth_db')
+        earnings_growth = _yf('earningsGrowth') if not pd.isna(_yf('earningsGrowth')) \
+            else _db('earnings_growth_db')
+        earnings_quarterly_growth = _yf('earningsQuarterlyGrowth')
 
-        # Growth metrics
-        revenue_growth = info.get('revenueGrowth', np.nan)
-        earnings_growth = info.get('earningsGrowth', np.nan)
-        earnings_quarterly_growth = info.get('earningsQuarterlyGrowth', np.nan)
+        # Debt
+        debt_to_equity = _yf('debtToEquity') if not pd.isna(_yf('debtToEquity')) \
+            else _db('debt_to_equity_db')
+        current_ratio = _yf('currentRatio')
+        quick_ratio = _yf('quickRatio')
 
-        # Debt metrics
-        debt_to_equity = info.get('debtToEquity', np.nan)
-        current_ratio = info.get('currentRatio', np.nan)
-        quick_ratio = info.get('quickRatio', np.nan)
+        # Dividends / beta
+        dividend_yield = _yf('dividendYield') if not pd.isna(_yf('dividendYield')) \
+            else _db('dividend_yield_db')
+        payout_ratio = _yf('payoutRatio') if not pd.isna(_yf('payoutRatio')) \
+            else _db('screener_dividend_payout_db')
+        beta = _yf('beta')
 
-        # Dividend metrics
-        dividend_yield = info.get('dividendYield', np.nan)
-        payout_ratio = info.get('payoutRatio', np.nan)
-
-        # Beta and volatility
-        beta = info.get('beta', np.nan)
-
-        # Calculate additional ratios if data available
-        # ROCE (Return on Capital Employed)
+        # Derived ratios
         roce = np.nan
         if not pd.isna(ebitda) and not pd.isna(total_assets) and not pd.isna(total_debt):
-            capital_employed = total_assets - (total_assets - total_equity - total_debt) \
+            cap_emp = total_assets - (total_assets - total_equity - total_debt) \
                 if not pd.isna(total_equity) else total_assets
-            if capital_employed and capital_employed > 0:
-                roce = ebitda / capital_employed
+            if cap_emp and cap_emp > 0:
+                roce = ebitda / cap_emp
+        if pd.isna(roce):
+            roce = _db('roce_db')
 
-        # FCF Margin
         fcf_margin = np.nan
         if not pd.isna(free_cash_flow) and not pd.isna(revenue) and revenue > 0:
             fcf_margin = free_cash_flow / revenue
+        if pd.isna(fcf_margin):
+            fcf_margin = _db('fcf_margin_db')
 
-        # FCF to Net Income ratio
         fcf_to_net_income = np.nan
         if not pd.isna(free_cash_flow) and not pd.isna(net_income) and net_income > 0:
             fcf_to_net_income = free_cash_flow / net_income
+        if pd.isna(fcf_to_net_income):
+            fcf_to_net_income = _db('fcf_to_net_income_db')
 
-        # Gross Profit to Total Assets
         gp_to_assets = np.nan
         if not pd.isna(gross_profit) and not pd.isna(total_assets) and total_assets > 0:
             gp_to_assets = gross_profit / total_assets
 
-        # Asset turnover
         asset_turnover = np.nan
         if not pd.isna(revenue) and not pd.isna(total_assets) and total_assets > 0:
             asset_turnover = revenue / total_assets
+        if pd.isna(asset_turnover):
+            asset_turnover = _db('asset_turnover_db')
 
-        # Get sector and industry
-        sector = info.get('sector', 'Unknown') or 'Unknown'
-        industry = info.get('industry', 'Unknown') or 'Unknown'
+        # Sector / industry
+        sector = (info.get('sector') or _db('sector_db', 'Unknown') or 'Unknown')
+        industry = (info.get('industry') or _db('industry_db', 'Unknown') or 'Unknown')
 
-        # Fetch additional data from screener database
-        screener_data = self.fetch_screener_data(used_ticker)
+        # Build _raw_info cache for predict_pe (price + EPS display)
+        # Supplement with screener DB values if yfinance is missing them
+        cached_info = dict(info)
+        if not cached_info.get('currentPrice') and not cached_info.get('regularMarketPrice'):
+            cached_info['currentPrice'] = db.get('current_price_db')
+        if not cached_info.get('trailingEps'):
+            cached_info['trailingEps'] = db.get('eps_db')
+        if not cached_info.get('longName'):
+            cached_info['longName'] = db.get('company_name_db', used_ticker)
 
-        # Combine yfinance and screener data; also cache the raw info for predict_pe
-        result = {
+        return {
             'ticker': used_ticker,
-            '_raw_info': info,          # cached so predict_pe avoids a 2nd API call
+            '_raw_info': cached_info,
             'current_pe': current_pe,
             'forward_pe': forward_pe,
             'market_cap': market_cap,
@@ -359,21 +533,18 @@ class PEPredictionModel:
             'beta': beta,
             'sector': sector,
             'industry': industry,
-            # Screener-specific metrics
-            'debtor_days': screener_data.get('debtor_days', np.nan),
-            'inventory_days': screener_data.get('inventory_days', np.nan),
-            'days_payable': screener_data.get('days_payable', np.nan),
-            'cash_conversion_cycle': screener_data.get('cash_conversion_cycle', np.nan),
-            'working_capital_days': screener_data.get('working_capital_days', np.nan),
-            'screener_roce': screener_data.get('screener_roce', np.nan),
-            'fixed_assets_ratio': screener_data.get('fixed_assets_ratio', np.nan),
-            'investment_ratio': screener_data.get('investment_ratio', np.nan),
-            'screener_debt_to_equity': screener_data.get('screener_debt_to_equity', np.nan),
-            'screener_opm': screener_data.get('screener_opm', np.nan),
-            'screener_dividend_payout': screener_data.get('screener_dividend_payout', np.nan)
+            'debtor_days': _db('debtor_days'),
+            'inventory_days': _db('inventory_days'),
+            'days_payable': _db('days_payable'),
+            'cash_conversion_cycle': _db('cash_conversion_cycle'),
+            'working_capital_days': _db('working_capital_days'),
+            'screener_roce': _db('screener_roce'),
+            'fixed_assets_ratio': _db('fixed_assets_ratio'),
+            'investment_ratio': _db('investment_ratio'),
+            'screener_debt_to_equity': _db('debt_to_equity_db'),
+            'screener_opm': _db('operating_margins_db'),
+            'screener_dividend_payout': _db('screener_dividend_payout_db'),
         }
-
-        return result
 
     def build_dataset(self, max_stocks=None):
         """
