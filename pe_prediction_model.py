@@ -124,174 +124,236 @@ class PEPredictionModel:
             # Silently return empty dict if screener data not available
             return {}
 
-    def fetch_stock_data(self, ticker, max_retries=3):
+    # ------------------------------------------------------------------ #
+    #  Internal helpers for robust yfinance fetching                       #
+    # ------------------------------------------------------------------ #
+    _USER_AGENTS = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+        "(KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+        "Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+    ]
+
+    def _make_session(self):
+        """Return a requests.Session with retry adapter and random user-agent."""
+        import random
+        import requests
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+
+        session = requests.Session()
+        retry = Retry(
+            total=5,
+            backoff_factor=1.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST"],
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        session.headers.update(
+            {"User-Agent": random.choice(self._USER_AGENTS)}
+        )
+        return session
+
+    def _fetch_info_with_retry(self, ticker, max_retries=5):
         """
-        Fetch fundamental data for a single stock from yfinance + screener database
-
-        Parameters:
-        -----------
-        ticker : str
-            Stock ticker symbol
-        max_retries : int
-            Maximum number of retry attempts for yfinance API calls
-
-        Returns:
-        --------
-        dict : Dictionary containing fundamental metrics
+        Fetch yfinance .info dict with robust retry + backoff + user-agent rotation.
+        Returns (info_dict, ticker_used) or (None, ticker_used) on failure.
         """
         import time as _time
+        import random
 
-        for attempt in range(max_retries):
-            try:
-                stock = yf.Ticker(ticker)
-                info = stock.info
+        # Build a list of tickers to try: primary first, then .NS fallback for .BO tickers
+        candidates = [ticker]
+        if ticker.upper().endswith('.BO'):
+            candidates.append(ticker[:-3] + '.NS')
+        elif not ticker.upper().endswith('.NS') and '.' not in ticker:
+            candidates.append(ticker + '.NS')
 
-                # Get historical data for growth calculations
-                hist = stock.history(period='3y')
+        for t in candidates:
+            for attempt in range(max_retries):
+                try:
+                    session = self._make_session()
+                    stock = yf.Ticker(t, session=session)
+                    info = stock.info
 
-                if hist.empty or not info:
-                    if attempt < max_retries - 1:
-                        _time.sleep(2 ** attempt)  # Exponential backoff
-                        continue
-                    return None
+                    # yfinance returns a minimal stub dict on throttle/missing tickers
+                    # A real response has at least one price or fundamental field
+                    meaningful_keys = {
+                        'currentPrice', 'regularMarketPrice', 'marketCap',
+                        'trailingPE', 'forwardPE', 'trailingEps',
+                        'returnOnEquity', 'profitMargins', 'totalRevenue'
+                    }
+                    if info and meaningful_keys.intersection(info.keys()):
+                        return info, t   # success
 
-                # Basic valuation metrics
-                current_pe = info.get('trailingPE', np.nan)
-                forward_pe = info.get('forwardPE', np.nan)
+                    # Empty / stub response — wait and retry
+                    wait = (2 ** attempt) + random.uniform(0.5, 2.0)
+                    print(f"[yfinance] Empty info for {t} (attempt {attempt+1}/{max_retries}), "
+                          f"waiting {wait:.1f}s…")
+                    _time.sleep(wait)
 
-                # Skip if no P/E ratio available
-                if pd.isna(current_pe) or current_pe <= 0 or current_pe > 200:
-                    return None
+                except Exception as exc:
+                    wait = (2 ** attempt) + random.uniform(0.5, 2.0)
+                    print(f"[yfinance] Exception for {t} attempt {attempt+1}: {exc}; "
+                          f"waiting {wait:.1f}s…")
+                    _time.sleep(wait)
 
-                # Financial metrics from yfinance
-                market_cap = info.get('marketCap', np.nan)
-                revenue = info.get('totalRevenue', np.nan)
-                net_income = info.get('netIncomeToCommon', np.nan)
-                total_assets = info.get('totalAssets', np.nan)
-                total_equity = info.get('totalStockholderEquity', np.nan)
-                operating_cash_flow = info.get('operatingCashFlow', np.nan)
-                free_cash_flow = info.get('freeCashFlow', np.nan)
-                total_debt = info.get('totalDebt', np.nan)
-                ebitda = info.get('ebitda', np.nan)
-                gross_profit = info.get('grossProfits', np.nan)
+        return None, ticker   # all candidates and retries exhausted
 
-                # Pre-calculated ratios from yfinance
-                roe = info.get('returnOnEquity', np.nan)
-                roa = info.get('returnOnAssets', np.nan)
-                profit_margins = info.get('profitMargins', np.nan)
-                operating_margins = info.get('operatingMargins', np.nan)
-                gross_margins = info.get('grossMargins', np.nan)
+    def fetch_stock_data(self, ticker, max_retries=5):
+        """
+        Fetch fundamental data for a single stock from yfinance + screener database.
 
-                # Book value (removed price_to_book due to data leakage - it contains current price)
+        Parameters
+        ----------
+        ticker : str
+            Stock ticker symbol (e.g. RELIANCE.NS or RELIANCE.BO)
+        max_retries : int
+            Maximum retry attempts passed to the internal fetch helper.
 
-                # Growth metrics
-                revenue_growth = info.get('revenueGrowth', np.nan)
-                earnings_growth = info.get('earningsGrowth', np.nan)
-                earnings_quarterly_growth = info.get('earningsQuarterlyGrowth', np.nan)
+        Returns
+        -------
+        dict | None : Dictionary with fundamental metrics, or None on failure.
+        """
+        info, used_ticker = self._fetch_info_with_retry(ticker, max_retries=max_retries)
 
-                # Debt metrics
-                debt_to_equity = info.get('debtToEquity', np.nan)
-                current_ratio = info.get('currentRatio', np.nan)
-                quick_ratio = info.get('quickRatio', np.nan)
+        if not info:
+            print(f"[fetch_stock_data] Could not retrieve info for {ticker}")
+            return None
 
-                # Dividend metrics
-                dividend_yield = info.get('dividendYield', np.nan)
-                payout_ratio = info.get('payoutRatio', np.nan)
+        # Basic valuation metrics
+        current_pe = info.get('trailingPE', np.nan)
+        forward_pe = info.get('forwardPE', np.nan)
 
-                # Beta and volatility
-                beta = info.get('beta', np.nan)
+        # For prediction we need *some* P/E; if truly absent we use NaN and
+        # let the model fall back to training medians — we no longer hard-bail here
+        # so that users can still get a predicted fair P/E for stocks without trailing P/E.
+        # (The fetch_stock_data guard for training still drops rows missing P/E
+        #  via build_dataset → prepare_features → target filter.)
 
-                # Calculate additional ratios if data available
-                # ROCE (Return on Capital Employed)
-                roce = np.nan
-                if not pd.isna(ebitda) and not pd.isna(total_assets) and not pd.isna(total_debt):
-                    capital_employed = total_assets - (total_assets - total_equity - total_debt)
-                    if capital_employed > 0:
-                        roce = ebitda / capital_employed
+        # Financial metrics from yfinance
+        market_cap = info.get('marketCap', np.nan)
+        revenue = info.get('totalRevenue', np.nan)
+        net_income = info.get('netIncomeToCommon', np.nan)
+        total_assets = info.get('totalAssets', np.nan)
+        total_equity = info.get('totalStockholderEquity', np.nan)
+        operating_cash_flow = info.get('operatingCashFlow', np.nan)
+        free_cash_flow = info.get('freeCashFlow', np.nan)
+        total_debt = info.get('totalDebt', np.nan)
+        ebitda = info.get('ebitda', np.nan)
+        gross_profit = info.get('grossProfits', np.nan)
 
-                # FCF Margin
-                fcf_margin = np.nan
-                if not pd.isna(free_cash_flow) and not pd.isna(revenue) and revenue > 0:
-                    fcf_margin = free_cash_flow / revenue
+        # Pre-calculated ratios from yfinance
+        roe = info.get('returnOnEquity', np.nan)
+        roa = info.get('returnOnAssets', np.nan)
+        profit_margins = info.get('profitMargins', np.nan)
+        operating_margins = info.get('operatingMargins', np.nan)
+        gross_margins = info.get('grossMargins', np.nan)
 
-                # FCF to Net Income ratio
-                fcf_to_net_income = np.nan
-                if not pd.isna(free_cash_flow) and not pd.isna(net_income) and net_income > 0:
-                    fcf_to_net_income = free_cash_flow / net_income
+        # Growth metrics
+        revenue_growth = info.get('revenueGrowth', np.nan)
+        earnings_growth = info.get('earningsGrowth', np.nan)
+        earnings_quarterly_growth = info.get('earningsQuarterlyGrowth', np.nan)
 
-                # Gross Profit to Total Assets
-                gp_to_assets = np.nan
-                if not pd.isna(gross_profit) and not pd.isna(total_assets) and total_assets > 0:
-                    gp_to_assets = gross_profit / total_assets
+        # Debt metrics
+        debt_to_equity = info.get('debtToEquity', np.nan)
+        current_ratio = info.get('currentRatio', np.nan)
+        quick_ratio = info.get('quickRatio', np.nan)
 
-                # Asset turnover
-                asset_turnover = np.nan
-                if not pd.isna(revenue) and not pd.isna(total_assets) and total_assets > 0:
-                    asset_turnover = revenue / total_assets
+        # Dividend metrics
+        dividend_yield = info.get('dividendYield', np.nan)
+        payout_ratio = info.get('payoutRatio', np.nan)
 
-                # Get sector and industry
-                sector = info.get('sector', 'Unknown')
-                industry = info.get('industry', 'Unknown')
+        # Beta and volatility
+        beta = info.get('beta', np.nan)
 
-                # Fetch additional data from screener database
-                screener_data = self.fetch_screener_data(ticker)
+        # Calculate additional ratios if data available
+        # ROCE (Return on Capital Employed)
+        roce = np.nan
+        if not pd.isna(ebitda) and not pd.isna(total_assets) and not pd.isna(total_debt):
+            capital_employed = total_assets - (total_assets - total_equity - total_debt) \
+                if not pd.isna(total_equity) else total_assets
+            if capital_employed and capital_employed > 0:
+                roce = ebitda / capital_employed
 
-                # Combine yfinance and screener data
-                result = {
-                    'ticker': ticker,
-                    'current_pe': current_pe,
-                    'forward_pe': forward_pe,
-                    'market_cap': market_cap,
-                    'revenue': revenue,
-                    'net_income': net_income,
-                    'ebitda': ebitda,
-                    'gross_profit': gross_profit,
-                    'roe': roe,
-                    'roa': roa,
-                    'roce': roce,
-                    'profit_margins': profit_margins,
-                    'operating_margins': operating_margins,
-                    'gross_margins': gross_margins,
-                    'fcf_margin': fcf_margin,
-                    'fcf_to_net_income': fcf_to_net_income,
-                    'gp_to_assets': gp_to_assets,
-                    'asset_turnover': asset_turnover,
-                    'revenue_growth': revenue_growth,
-                    'earnings_growth': earnings_growth,
-                    'earnings_quarterly_growth': earnings_quarterly_growth,
-                    'debt_to_equity': debt_to_equity,
-                    'current_ratio': current_ratio,
-                    'quick_ratio': quick_ratio,
-                    'dividend_yield': dividend_yield,
-                    'payout_ratio': payout_ratio,
-                    'beta': beta,
-                    'sector': sector,
-                    'industry': industry,
-                    # Screener-specific metrics
-                    'debtor_days': screener_data.get('debtor_days', np.nan),
-                    'inventory_days': screener_data.get('inventory_days', np.nan),
-                    'days_payable': screener_data.get('days_payable', np.nan),
-                    'cash_conversion_cycle': screener_data.get('cash_conversion_cycle', np.nan),
-                    'working_capital_days': screener_data.get('working_capital_days', np.nan),
-                    'screener_roce': screener_data.get('screener_roce', np.nan),
-                    'fixed_assets_ratio': screener_data.get('fixed_assets_ratio', np.nan),
-                    'investment_ratio': screener_data.get('investment_ratio', np.nan),
-                    'screener_debt_to_equity': screener_data.get('screener_debt_to_equity', np.nan),
-                    'screener_opm': screener_data.get('screener_opm', np.nan),
-                    'screener_dividend_payout': screener_data.get('screener_dividend_payout', np.nan)
-                }
+        # FCF Margin
+        fcf_margin = np.nan
+        if not pd.isna(free_cash_flow) and not pd.isna(revenue) and revenue > 0:
+            fcf_margin = free_cash_flow / revenue
 
-                return result
+        # FCF to Net Income ratio
+        fcf_to_net_income = np.nan
+        if not pd.isna(free_cash_flow) and not pd.isna(net_income) and net_income > 0:
+            fcf_to_net_income = free_cash_flow / net_income
 
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    print(f"Retry {attempt + 1}/{max_retries} for {ticker}: {str(e)}")
-                    _time.sleep(2 ** attempt)
-                    continue
-                print(f"Error fetching data for {ticker} after {max_retries} attempts: {str(e)}")
-                return None
+        # Gross Profit to Total Assets
+        gp_to_assets = np.nan
+        if not pd.isna(gross_profit) and not pd.isna(total_assets) and total_assets > 0:
+            gp_to_assets = gross_profit / total_assets
 
-        return None
+        # Asset turnover
+        asset_turnover = np.nan
+        if not pd.isna(revenue) and not pd.isna(total_assets) and total_assets > 0:
+            asset_turnover = revenue / total_assets
+
+        # Get sector and industry
+        sector = info.get('sector', 'Unknown') or 'Unknown'
+        industry = info.get('industry', 'Unknown') or 'Unknown'
+
+        # Fetch additional data from screener database
+        screener_data = self.fetch_screener_data(used_ticker)
+
+        # Combine yfinance and screener data; also cache the raw info for predict_pe
+        result = {
+            'ticker': used_ticker,
+            '_raw_info': info,          # cached so predict_pe avoids a 2nd API call
+            'current_pe': current_pe,
+            'forward_pe': forward_pe,
+            'market_cap': market_cap,
+            'revenue': revenue,
+            'net_income': net_income,
+            'ebitda': ebitda,
+            'gross_profit': gross_profit,
+            'roe': roe,
+            'roa': roa,
+            'roce': roce,
+            'profit_margins': profit_margins,
+            'operating_margins': operating_margins,
+            'gross_margins': gross_margins,
+            'fcf_margin': fcf_margin,
+            'fcf_to_net_income': fcf_to_net_income,
+            'gp_to_assets': gp_to_assets,
+            'asset_turnover': asset_turnover,
+            'revenue_growth': revenue_growth,
+            'earnings_growth': earnings_growth,
+            'earnings_quarterly_growth': earnings_quarterly_growth,
+            'debt_to_equity': debt_to_equity,
+            'current_ratio': current_ratio,
+            'quick_ratio': quick_ratio,
+            'dividend_yield': dividend_yield,
+            'payout_ratio': payout_ratio,
+            'beta': beta,
+            'sector': sector,
+            'industry': industry,
+            # Screener-specific metrics
+            'debtor_days': screener_data.get('debtor_days', np.nan),
+            'inventory_days': screener_data.get('inventory_days', np.nan),
+            'days_payable': screener_data.get('days_payable', np.nan),
+            'cash_conversion_cycle': screener_data.get('cash_conversion_cycle', np.nan),
+            'working_capital_days': screener_data.get('working_capital_days', np.nan),
+            'screener_roce': screener_data.get('screener_roce', np.nan),
+            'fixed_assets_ratio': screener_data.get('fixed_assets_ratio', np.nan),
+            'investment_ratio': screener_data.get('investment_ratio', np.nan),
+            'screener_debt_to_equity': screener_data.get('screener_debt_to_equity', np.nan),
+            'screener_opm': screener_data.get('screener_opm', np.nan),
+            'screener_dividend_payout': screener_data.get('screener_dividend_payout', np.nan)
+        }
+
+        return result
 
     def build_dataset(self, max_stocks=None):
         """
@@ -657,25 +719,28 @@ class PEPredictionModel:
 
     def predict_pe(self, ticker):
         """
-        Predict P/E ratio for a given stock
+        Predict P/E ratio for a given stock.
 
-        Parameters:
-        -----------
+        Parameters
+        ----------
         ticker : str
-            Stock ticker symbol
+            Stock ticker symbol (e.g. RELIANCE.NS)
 
-        Returns:
-        --------
-        dict : Prediction results with fair value analysis
+        Returns
+        -------
+        dict | None : Prediction results with fair value analysis.
         """
         if self.model is None:
             raise ValueError("Model not trained. Please train the model first.")
 
-        # Fetch stock data
+        # Fetch stock data (includes cached raw info to avoid a 2nd API call)
         stock_data = self.fetch_stock_data(ticker)
 
         if not stock_data:
             return None
+
+        # Reuse the cached info dict — no second yfinance call needed
+        info = stock_data.pop('_raw_info', {})
 
         # Prepare features
         stock_df = pd.DataFrame([stock_data])
@@ -704,14 +769,16 @@ class PEPredictionModel:
                     X[col].fillna(0, inplace=True)
 
         # Predict P/E
-        predicted_pe = self.model.predict(X)[0]
+        predicted_pe = float(self.model.predict(X)[0])
         current_pe = stock_data['current_pe']
 
-        # Get current stock price and EPS
-        stock = yf.Ticker(ticker)
-        info = stock.info
-        current_price = info.get('currentPrice', np.nan)
+        # Price and EPS already in the cached info dict — no extra network call
+        current_price = info.get('currentPrice') or info.get('regularMarketPrice', np.nan)
+        if current_price is None:
+            current_price = np.nan
         eps = info.get('trailingEps', np.nan)
+        if eps is None:
+            eps = np.nan
 
         # Calculate fair value
         fair_price = np.nan
@@ -719,13 +786,13 @@ class PEPredictionModel:
 
         if not pd.isna(eps) and eps > 0:
             fair_price = predicted_pe * eps
-
             if not pd.isna(current_price) and current_price > 0:
                 upside_downside = ((fair_price - current_price) / current_price) * 100
 
+        used_ticker = stock_data.get('ticker', ticker)
         return {
-            'ticker': ticker,
-            'company_name': info.get('longName', ''),
+            'ticker': used_ticker,
+            'company_name': info.get('longName', '') or used_ticker,
             'current_price': current_price,
             'current_pe': current_pe,
             'predicted_pe': predicted_pe,
@@ -734,7 +801,7 @@ class PEPredictionModel:
             'upside_downside_pct': upside_downside,
             'sector': stock_data['sector'],
             'industry': stock_data['industry'],
-            # Add fundamental metrics for key contributors analysis
+            # Fundamental metrics for key contributors analysis
             'roe': stock_data.get('roe', np.nan),
             'roce': stock_data.get('roce', np.nan),
             'profit_margins': stock_data.get('profit_margins', np.nan),

@@ -316,8 +316,18 @@ def main():
     selected_ticker = st.sidebar.text_input(
         "Enter Stock Ticker:",
         placeholder="e.g., RELIANCE.NS",
-        help="Enter the stock ticker symbol with .NS suffix for NSE stocks"
+        help="Enter the stock ticker symbol with .NS suffix for NSE stocks or .BO for BSE"
     )
+
+    # Normalize input: strip whitespace and uppercase
+    if selected_ticker:
+        selected_ticker = selected_ticker.strip().upper()
+        # Warn users who forget the exchange suffix
+        if selected_ticker and '.' not in selected_ticker:
+            st.sidebar.warning(
+                "⚠️ No exchange suffix detected. Try adding **.NS** (NSE) or **.BO** (BSE). "
+                "E.g., `RELIANCE.NS`"
+            )
 
     # Optional: Show dropdown of available stocks for reference
     st.sidebar.markdown("---")
@@ -347,24 +357,34 @@ def main():
         if not selected_ticker:
             st.warning("Please enter a stock ticker or select from the list.")
         else:
-            with st.spinner(f"Analyzing {selected_ticker}..."):
+            with st.spinner(f"Fetching data for {selected_ticker}… (this may take up to 30s on first load)"):
                 prediction = None
                 last_error = None
+                status_placeholder = st.empty()
 
-                # Try up to 2 times (yfinance can be flaky on cloud)
-                for attempt in range(2):
+                # Try up to 3 times; the model's _fetch_info_with_retry already
+                # handles deep retries with backoff — this outer loop catches any
+                # remaining transient failures at the Streamlit layer.
+                for attempt in range(3):
+                    if attempt > 0:
+                        status_placeholder.info(
+                            f"♻️ Attempt {attempt + 1}/3 — Yahoo Finance can be slow on cloud. Retrying…"
+                        )
                     try:
                         prediction = model.predict_pe(selected_ticker)
                         if prediction:
+                            status_placeholder.empty()
                             break
                         else:
-                            last_error = "No data returned (stock may lack P/E data or yfinance returned empty results)"
+                            last_error = "No data returned — stock may not be listed on Yahoo Finance or data is temporarily unavailable."
                     except Exception as e:
                         last_error = str(e)
 
-                    if attempt == 0 and not prediction:
+                    if attempt < 2 and not prediction:
                         import time
-                        time.sleep(2)  # Brief pause before retry
+                        time.sleep(3)  # Brief pause between outer retries
+
+                status_placeholder.empty()
 
                 if prediction:
                     # Display results
