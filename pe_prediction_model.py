@@ -609,8 +609,10 @@ class PEPredictionModel:
         # Filter out rows where target variable is missing (NaN/null), non-finite, or <= 0
         if target in df.columns:
             initial_count = len(df)
-            valid_target_mask = pd.notna(df[target]) & np.isfinite(df[target]) & (df[target] > 0)
+            pe_numeric = pd.to_numeric(df[target], errors='coerce')
+            valid_target_mask = pd.notna(pe_numeric) & np.isfinite(pe_numeric) & (pe_numeric > 0)
             df = df[valid_target_mask].copy()
+            df[target] = pe_numeric[valid_target_mask]
             dropped_count = initial_count - len(df)
             if dropped_count > 0:
                 print(f"Dropped {dropped_count} rows with missing or invalid target '{target}' (remaining valid samples: {len(df)})")
@@ -643,21 +645,18 @@ class PEPredictionModel:
 
         # Create feature matrix
         X = df[feature_columns].copy()
-        y = df[target].copy()
+        y = df[target].astype(float).copy()
 
-        # Replace inf with nan in features
-        X = X.replace([np.inf, -np.inf], np.nan)
-
-        # Handle missing values - fill with median for numeric columns
-        # Store medians for use at prediction time
+        # Safely coerce feature columns to numeric and handle missing/infinite values
         self.training_medians = {}
         for col in X.columns:
-            if X[col].dtype in ['float64', 'int64']:
-                median_val = X[col].median()
-                if pd.isna(median_val):
-                    median_val = 0.0
-                self.training_medians[col] = median_val
-                X[col].fillna(median_val, inplace=True)
+            X[col] = pd.to_numeric(X[col], errors='coerce')
+            X[col] = X[col].replace([np.inf, -np.inf], np.nan)
+            median_val = X[col].median()
+            if pd.isna(median_val):
+                median_val = 0.0
+            self.training_medians[col] = median_val
+            X[col] = X[col].fillna(median_val)
 
         self.feature_names = feature_columns
 
@@ -691,6 +690,9 @@ class PEPredictionModel:
         print("\n" + "=" * 70)
         print("Training Random Forest Model...")
         print("=" * 70)
+
+        # Coerce y to numeric float series defensively
+        y = pd.to_numeric(y, errors='coerce')
 
         # Ensure no residual NaNs or infinite values exist in X or y
         if y.isna().any() or not np.isfinite(y).all() or X.isna().any().any():
