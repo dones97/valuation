@@ -601,9 +601,23 @@ class PEPredictionModel:
         --------
         tuple : (X, y) features and target variable
         """
-        # Encode categorical variables
-        df['sector_encoded'] = self.sector_encoder.fit_transform(df['sector'])
-        df['industry_encoded'] = self.industry_encoder.fit_transform(df['industry'])
+        # Copy df to avoid modifying original dataframe
+        df = df.copy()
+
+        target = 'current_pe'
+
+        # Filter out rows where target variable is missing (NaN/null), non-finite, or <= 0
+        if target in df.columns:
+            initial_count = len(df)
+            valid_target_mask = pd.notna(df[target]) & np.isfinite(df[target]) & (df[target] > 0)
+            df = df[valid_target_mask].copy()
+            dropped_count = initial_count - len(df)
+            if dropped_count > 0:
+                print(f"Dropped {dropped_count} rows with missing or invalid target '{target}' (remaining valid samples: {len(df)})")
+
+        # Encode categorical variables safely
+        df['sector_encoded'] = self.sector_encoder.fit_transform(df['sector'].fillna('Unknown'))
+        df['industry_encoded'] = self.industry_encoder.fit_transform(df['industry'].fillna('Unknown'))
 
         # Select features for training (removed price_to_book to prevent data leakage)
         # Now includes additional screener database metrics for operational efficiency
@@ -627,12 +641,12 @@ class PEPredictionModel:
             'sector_encoded', 'industry_encoded'
         ]
 
-        # Target variable
-        target = 'current_pe'
-
         # Create feature matrix
         X = df[feature_columns].copy()
         y = df[target].copy()
+
+        # Replace inf with nan in features
+        X = X.replace([np.inf, -np.inf], np.nan)
 
         # Handle missing values - fill with median for numeric columns
         # Store medians for use at prediction time
@@ -640,6 +654,8 @@ class PEPredictionModel:
         for col in X.columns:
             if X[col].dtype in ['float64', 'int64']:
                 median_val = X[col].median()
+                if pd.isna(median_val):
+                    median_val = 0.0
                 self.training_medians[col] = median_val
                 X[col].fillna(median_val, inplace=True)
 
@@ -675,6 +691,13 @@ class PEPredictionModel:
         print("\n" + "=" * 70)
         print("Training Random Forest Model...")
         print("=" * 70)
+
+        # Ensure no residual NaNs or infinite values exist in X or y
+        if y.isna().any() or not np.isfinite(y).all() or X.isna().any().any():
+            print("Warning: Missing or non-finite values detected prior to training. Cleaning...")
+            valid_mask = pd.notna(y) & np.isfinite(y) & ~X.isna().any(axis=1)
+            X = X[valid_mask].copy()
+            y = y[valid_mask].copy()
 
         # 80/20 train-test split
         X_train, X_test, y_train, y_test = train_test_split(
